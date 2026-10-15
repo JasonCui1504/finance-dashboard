@@ -1,0 +1,37 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "finance-local",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "start",
+        "--",
+        "-H",
+        "127.0.0.1",
+        "-p",
+        "3100"
+      ],
+      "port": 3100,
+      "url": "http://127.0.0.1:3100"
+    },
+    {
+      "name": "finance-preview",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "FINANCE_DATABASE_URL=file:.data/preview.db",
+        "npm",
+        "run",
+        "start",
+        "--",
+        "-H",
+        "127.0.0.1",
+        "-p",
+        "3101"
+      ],
+      "port": 3101,
+      "url": "http://127.0.0.1:3101"
+    }
+  ]
+}
