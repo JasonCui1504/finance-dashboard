@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+:root {
+  --canvas: #0d1110;
+  --surface: #141c17;
+  --lift: #1c2820;
+  --line: #243028;
+  --accent: #4a7c59;
+  --accent-dim: #2d4a3e;
+  --prose: #deeade;
+  --subtle: #b0c8b8;
+  --faint: #8aa498;
+
+  --duration-exit: 150ms;
+  --duration-enter: 210ms;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-lift: var(--lift);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-prose: var(--prose);
+  --color-subtle: var(--subtle);
+  --color-faint: var(--faint);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--canvas);
+  color: var(--prose);
+}
+
+/* ─── Finance dashboard motion ─────────────────────────────────── */
+
+@keyframes fin-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.fin-rise {
+  animation: fin-rise 0.55s cubic-bezier(0.21, 0.68, 0.28, 0.99) both;
+}
+
+@keyframes fin-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.fin-draw {
+  stroke-dasharray: 1;
+  animation: fin-draw 1.1s cubic-bezier(0.4, 0, 0.2, 1) 0.15s both;
+}
+
+@keyframes fin-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.fin-fade {
+  animation: fin-fade 0.8s ease 0.5s both;
+}
+
+@keyframes fin-pulse {
+  0%,
+  100% {
+    opacity: 0.9;
+    r: 4;
+  }
+  50% {
+    opacity: 0.25;
+    r: 7;
+  }
+}
+
+.fin-pulse {
+  animation: fin-pulse 2.4s ease-in-out infinite;
+}
+
+.fin-card {
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.fin-card:hover {
+  border-color: var(--accent-dim);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  transform: translateY(-1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fin-rise,
+  .fin-draw,
+  .fin-fade,
+  .fin-pulse {
+    animation: none;
+  }
+  .fin-card,
+  .fin-card:hover {
+    transform: none;
+    transition: none;
+  }
+}

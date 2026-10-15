@@ -1,0 +1,10 @@
+{
+  "name": "Finance Dashboard",
+  "short_name": "Finance",
+  "start_url": "/dashboard",
+  "scope": "/dashboard",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [{ "src": "/dashboard-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
