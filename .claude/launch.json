@@ -3,35 +3,33 @@
   "configurations": [
     {
       "name": "finance-local",
-      "runtimeExecutable": "npm",
+      "runtimeExecutable": "zsh",
       "runtimeArgs": [
-        "run",
-        "start",
-        "--",
-        "-H",
-        "127.0.0.1",
-        "-p",
-        "3100"
+        "-c",
+        "export PATH=\"$HOME/.local/node/bin:$PATH\"; exec npm run start -- -H 127.0.0.1 -p 3100"
       ],
       "port": 3100,
       "url": "http://127.0.0.1:3100"
     },
     {
       "name": "finance-preview",
-      "runtimeExecutable": "env",
+      "runtimeExecutable": "zsh",
       "runtimeArgs": [
-        "FINANCE_DATABASE_URL=file:.data/preview.db",
-        "npm",
-        "run",
-        "start",
-        "--",
-        "-H",
-        "127.0.0.1",
-        "-p",
-        "3101"
+        "-c",
+        "export PATH=\"$HOME/.local/node/bin:$PATH\"; export FINANCE_DATABASE_URL=file:.data/preview.db; exec npm run start -- -H 127.0.0.1 -p 3101"
       ],
       "port": 3101,
       "url": "http://127.0.0.1:3101"
+    },
+    {
+      "name": "finance-assistant-test",
+      "runtimeExecutable": "zsh",
+      "runtimeArgs": [
+        "-c",
+        "export PATH=\"$HOME/.local/node/bin:$PATH\"; set -a; source .data/assistant-test.env; FINANCE_TOTP_SECRET=; FINANCE_DATABASE_URL=file:.data/assistant-test.db; exec npm run dev -- -p 3102"
+      ],
+      "port": 3102,
+      "url": "http://127.0.0.1:3102"
     }
   ]
 }

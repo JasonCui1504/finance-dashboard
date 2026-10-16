@@ -1,8 +1,12 @@
 #!/bin/zsh
-# Run this yourself. Installs two launchd agents for the local-only dashboard:
+# Run this yourself. Installs launchd agents for the local-only dashboard:
 #   com.finance.dashboard.server  - `next start` on 127.0.0.1:3100 at login
 #   com.finance.dashboard.refresh - daily price refresh at 17:00 local time
 #                                   (runs at next wake if the Mac was asleep)
+#   com.finance.dashboard.llm     - the assistant's own Ollama server on
+#                                   127.0.0.1:11435, cloud features off
+#                                   (only if ~/.finance-ollama/bin/ollama is
+#                                   installed — see README "Assistant")
 # Remove them with scripts/local/uninstall.sh.
 set -e
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -46,7 +50,38 @@ cat > "$AGENTS/com.finance.dashboard.refresh.plist" <<PLIST
 </dict></plist>
 PLIST
 
-for n in server refresh; do
+# The assistant's model server: the official standalone Ollama build in its
+# own directory (doesn't self-update; one stable path for the firewall rule),
+# loopback only, Ollama cloud models and web search disabled, and its own
+# model directory so it's separate from any Ollama.app install.
+OLLAMA="$HOME/.finance-ollama/bin/ollama"
+AGENT_NAMES=(server refresh)
+if [[ -x $OLLAMA ]]; then
+  LLM_MODELS="$HOME/.finance-ollama/models"
+  mkdir -p "$LLM_MODELS"
+  cat > "$AGENTS/com.finance.dashboard.llm.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.finance.dashboard.llm</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>OLLAMA_HOST</key><string>127.0.0.1:11435</string>
+    <key>OLLAMA_NO_CLOUD</key><string>1</string>
+    <key>OLLAMA_MODELS</key><string>$LLM_MODELS</string>
+  </dict>
+  <key>ProgramArguments</key><array><string>$OLLAMA</string><string>serve</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$LOGS/finance-llm.log</string>
+  <key>StandardErrorPath</key><string>$LOGS/finance-llm.log</string>
+</dict></plist>
+PLIST
+  AGENT_NAMES+=(llm)
+else
+  echo "$OLLAMA not found; skipping the assistant's model server (see README \"Assistant\")."
+fi
+
+for n in $AGENT_NAMES; do
   launchctl bootout "gui/$UID/com.finance.dashboard.$n" 2>/dev/null || true
   # bootout returns before the old job is fully gone; bootstrapping too soon
   # fails with "Bootstrap failed: 5: Input/output error".

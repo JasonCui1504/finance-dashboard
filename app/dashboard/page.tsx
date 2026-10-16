@@ -41,6 +41,7 @@ import type { InsightFacts } from "../../lib/finance/insights";
 import AccessTimeline from "./components/AccessTimeline";
 import AiInsights from "./components/AiInsights";
 import CashFlowViews from "./components/CashFlowViews";
+import ChatPanel from "./components/ChatPanel";
 import CdInterestChart from "./components/CdInterestChart";
 import Concentration from "./components/Concentration";
 import HoldingsTreemap from "./components/HoldingsTreemap";
@@ -977,6 +978,7 @@ export default async function DashboardPage() {
         </Card>
       )}
 
+      <ChatPanel />
     </div>
   );
 }

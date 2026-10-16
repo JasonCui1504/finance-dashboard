@@ -10,9 +10,10 @@ This repo is local-only and is not deployed anywhere. It was split out of
 `photography-site-next` on 2026-10-15 (earlier history lives in that repo).
 It runs only on your Mac, against `.data/finance.db`:
 
-- `scripts/local/install.sh` builds the app and installs two launchd agents:
-  the server (`next start` on `127.0.0.1:3100`, started at login) and a daily
-  17:00 price refresh (`scripts/local/refresh.sh`). `uninstall.sh` removes them.
+- `scripts/local/install.sh` builds the app and installs launchd agents:
+  the server (`next start` on `127.0.0.1:3100`, started at login), a daily
+  17:00 price refresh (`scripts/local/refresh.sh`), and the assistant's model
+  server (see "Assistant" below). `uninstall.sh` removes them.
 - Open `http://127.0.0.1:3100/dashboard` in Safari → File → Add to Dock for a
   standalone app window.
 - `npm run dev` serves a dev copy on `127.0.0.1:3101`, so it doesn't clash
@@ -45,6 +46,54 @@ scripts/local/install.sh
 The first line stops the dashboard server so it isn't writing to the file;
 `install.sh` rebuilds and starts it again. To keep the current data just in
 case, copy `.data/finance.db` somewhere first.
+
+### Assistant ("Ask about your finances")
+
+A chat panel on `/dashboard` answers questions with a local Llama model
+(`llama3.1:8b`). Nothing leaves the Mac:
+
+- **Own model server.** `install.sh` adds a third launchd agent,
+  `com.finance.dashboard.llm`: the official standalone Ollama build in
+  `~/.finance-ollama/bin` (doesn't update itself) serving on `127.0.0.1:11435`, with `OLLAMA_NO_CLOUD=1` (no Ollama cloud
+  models or web search) and its own model directory `~/.finance-ollama/models`.
+  It's separate from Ollama.app, which the dashboard never talks to. Log:
+  `~/Library/Logs/finance-llm.log`.
+- **No tools.** `lib/finance/assistant.ts` builds a read-only text summary
+  with SQL (net worth, accounts, holdings, CDs, income, spending, budgets,
+  bills, the newest 300 transactions) and sends it with your question.
+  The model can't query, write or fetch anything, so text planted in an
+  imported statement can at worst change the wording of a reply. Categories
+  hidden on the dashboard are left out of the summary too.
+- **Plain-text replies, strict CSP.** Replies are never rendered as markdown or
+  HTML, and `next.config.ts` sets a Content-Security-Policy that only lets the
+  page talk to its own origin.
+- **Nothing saved.** The conversation lives in the browser tab only; closing
+  the panel or the tab forgets it.
+
+One-time setup (Homebrew has no prebuilt Ollama for macOS 14, so use the
+official release): download `ollama-darwin.tgz` and `sha256sum.txt` from
+[github.com/ollama/ollama/releases](https://github.com/ollama/ollama/releases),
+then
+
+```bash
+shasum -a 256 -c <(grep ollama-darwin.tgz sha256sum.txt)
+mkdir -p ~/.finance-ollama/bin && tar -xzf ollama-darwin.tgz -C ~/.finance-ollama/bin
+scripts/local/install.sh
+scripts/local/llm-pull.sh
+```
+
+To update Ollama later, extract a newer release over `~/.finance-ollama/bin`
+the same way and re-run `install.sh`.
+
+`llm-pull.sh` downloads the model (~4.9 GB). After that the model server never
+needs the network, so block it: macOS's built-in firewall only filters
+*incoming* connections, so use an outbound firewall such as
+[LuLu](https://objective-see.org/products/lulu.html) and add a **Block** rule
+for `~/.finance-ollama/bin/ollama` (the path stays the same across updates). To check, run
+`nettop -m tcp -p ollama` while chatting; you should only see `127.0.0.1`.
+
+The model is an 8B model: good at describing patterns, unreliable at maths, so
+the summary carries precomputed totals and the prompt tells it to quote them.
 
 `scripts/local/pull-from-turso.mjs` was the one-off copy from the old Turso
 database. The sections below describe the previous hosted setup.
