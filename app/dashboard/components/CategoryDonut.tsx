@@ -48,7 +48,7 @@ export default function CategoryDonut({ slices }: { slices: Slice[] }) {
     .sort((a, b) => b.value - a.value);
 
   if (positive.length === 0) {
-    return <p className="text-sm text-faint">No spend to chart for this month.</p>;
+    return <p className="text-sm text-faint">No spend to chart for this period.</p>;
   }
 
   const head = positive.slice(0, MAX_SLICES);
@@ -106,7 +106,12 @@ export default function CategoryDonut({ slices }: { slices: Slice[] }) {
                 : `stroke-dashoffset 0.9s cubic-bezier(0.4, 0, 0.2, 1) ${i * 120}ms, stroke-width 0.15s, stroke-opacity 0.15s`,
             }}
           >
-            <title>{`${a.label}: ${fmtUSD(a.value)} (${((a.value / total) * 100).toFixed(1)}%)`}</title>
+            <title>
+              {`${a.label}: ${fmtUSD(a.value)} (${((a.value / total) * 100).toFixed(1)}%)` +
+                (i === MAX_SLICES && tail.length > 0
+                  ? ` — ${tail.map((t) => t.label).join(", ")}`
+                  : "")}
+            </title>
           </path>
         ))}
         <text x={c} y={c - 10} textAnchor="middle" fontSize="11" fill="#8aa498">
@@ -125,23 +130,36 @@ export default function CategoryDonut({ slices }: { slices: Slice[] }) {
         {visible.map((s, i) => (
           <li
             key={s.label}
-            className="flex items-center gap-2.5 transition-opacity"
+            className="flex flex-col gap-1.5 transition-opacity"
             style={{ opacity: hover == null || hover === i ? 1 : 0.5 }}
             onMouseEnter={() => setHover(i)}
             onMouseLeave={() => setHover(null)}
           >
-            <span
-              className="h-2.5 w-2.5 shrink-0 rounded-full"
-              style={{ background: s.color }}
-              aria-hidden
-            />
-            <span className="text-subtle">{s.label}</span>
-            <span className="ml-auto pl-4 text-prose tabular-nums">
-              {fmtUSD(s.value)}
-            </span>
-            <span className="w-11 text-right text-faint tabular-nums">
-              {((s.value / total) * 100).toFixed(0)}%
-            </span>
+            <div className="flex items-center gap-2.5">
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ background: s.color }}
+                aria-hidden
+              />
+              <span className="text-subtle">{s.label}</span>
+              <span className="ml-auto pl-4 text-prose tabular-nums">
+                {fmtUSD(s.value)}
+              </span>
+              <span className="w-11 text-right text-faint tabular-nums">
+                {((s.value / total) * 100).toFixed(0)}%
+              </span>
+            </div>
+            {/* Name what "Other" holds — the slice only has room for one colour. */}
+            {i === MAX_SLICES &&
+              tail.map((t) => (
+                <div key={t.label} className="flex items-center gap-2.5 pl-5 text-xs">
+                  <span className="text-faint">{t.label}</span>
+                  <span className="ml-auto pl-4 text-subtle tabular-nums">{fmtUSD(t.value)}</span>
+                  <span className="w-11 text-right text-faint tabular-nums">
+                    {((t.value / total) * 100).toFixed(0)}%
+                  </span>
+                </div>
+              ))}
           </li>
         ))}
       </ul>

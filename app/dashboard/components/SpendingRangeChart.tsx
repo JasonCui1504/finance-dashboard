@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { fmtUSD } from "./format";
 import { prefersReducedMotion } from "./motion";
 
@@ -8,8 +8,10 @@ export type SpendBucket = {
   /** First and last day covered, YYYY-MM-DD. */
   start: string;
   end: string;
-  /** Purchases (≥ 0). */
+  /** Card purchases (≥ 0). */
   spent: number;
+  /** Bills and manual monthly card totals, spread evenly over their month (≥ 0). */
+  spread: number;
   /** Returns and credits (≤ 0). */
   returned: number;
 };
@@ -20,6 +22,9 @@ const PAD = { top: 16, right: 12, bottom: 28, left: 56 };
 // Dark-mode steps validated against the card surface (dataviz palette check).
 export const SPENT_COLOR = "#d55181";
 export const RETURNED_COLOR = "#3987e5";
+// Spread amounts are an even split of a monthly figure, not real daily
+// spending: a muted neutral with a hatch, so they read as background.
+const SPREAD_COLOR = "#8aa498";
 const GRID = "#243028";
 const MUTED = "#8aa498";
 const INK = "#deeade";
@@ -43,11 +48,21 @@ function bucketLabel(b: SpendBucket): string {
 }
 
 /**
- * Spending over a date range in buckets of a few days: purchases rise above
- * the baseline, returns and credits hang below it, so a refund shows up where
- * it landed instead of silently shrinking a month.
+ * Spending over a date range in buckets of a few days: card purchases rise
+ * above the baseline on top of the spread monthly amounts, returns and
+ * credits hang below it, so a refund shows up where it landed instead of
+ * silently shrinking a month. Days after the newest imported statement are
+ * shaded, so a gap reads as "not imported yet" rather than "spent nothing".
  */
-export default function SpendingRangeChart({ buckets }: { buckets: SpendBucket[] }) {
+export default function SpendingRangeChart({
+  buckets,
+  lastImported,
+}: {
+  buckets: SpendBucket[];
+  /** Date of the newest imported card transaction, if any. */
+  lastImported: string | null;
+}) {
+  const hatchId = `spread-hatch-${useId().replace(/:/g, "")}`;
   const [{ grown, instant }, setAnim] = useState({ grown: false, instant: false });
   const [hover, setHover] = useState<number | null>(null);
   useEffect(() => {
@@ -56,7 +71,7 @@ export default function SpendingRangeChart({ buckets }: { buckets: SpendBucket[]
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const maxUp = Math.max(...buckets.map((b) => b.spent), 0);
+  const maxUp = Math.max(...buckets.map((b) => b.spent + b.spread), 0);
   const maxDown = Math.max(...buckets.map((b) => -b.returned), 0);
   if (buckets.length === 0 || (maxUp === 0 && maxDown === 0)) {
     return <p className="py-8 text-center text-sm text-faint">No card activity in this range.</p>;
@@ -79,6 +94,10 @@ export default function SpendingRangeChart({ buckets }: { buckets: SpendBucket[]
     ? "opacity 0.15s"
     : "height 0.5s cubic-bezier(0.4,0,0.2,1), y 0.5s cubic-bezier(0.4,0,0.2,1), opacity 0.15s";
   const sel = hover != null ? buckets[hover] : null;
+  // First bucket wholly after the newest statement; everything from it on is shaded.
+  const firstMissing =
+    lastImported == null ? -1 : buckets.findIndex((b) => b.start > lastImported);
+  const shadeX = firstMissing >= 0 ? PAD.left + slot * firstMissing : null;
 
   return (
     <div className="flex flex-col gap-2">
@@ -87,24 +106,41 @@ export default function SpendingRangeChart({ buckets }: { buckets: SpendBucket[]
           <>
             <span className="text-prose">{bucketLabel(sel)}</span>
             <span className="tabular-nums">
-              <span className="text-prose">{fmtUSD(sel.spent)}</span> spent
+              <span className="text-prose">{fmtUSD(sel.spent)}</span> card purchases
             </span>
+            {sel.spread > 0 && (
+              <span className="tabular-nums">
+                <span className="text-prose">{fmtUSD(sel.spread)}</span> bills &amp; monthly
+              </span>
+            )}
             {sel.returned !== 0 && (
               <span className="tabular-nums">
                 <span className="text-prose">{fmtUSD(-sel.returned)}</span> returned
               </span>
             )}
             <span className="tabular-nums">
-              net <span className="text-prose">{fmtUSD(sel.spent + sel.returned)}</span>
+              net <span className="text-prose">{fmtUSD(sel.spent + sel.spread + sel.returned)}</span>
             </span>
           </>
         ) : (
-          <span>Hover a bar for its dates and amounts</span>
+          <span>
+            Hover a bar for its dates and amounts
+            {shadeX != null && lastImported && (
+              <> · no statements imported after {shortDate(lastImported)}</>
+            )}
+          </span>
         )}
         <span className="ml-auto flex items-center gap-3">
           <span className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-sm" style={{ background: SPENT_COLOR }} aria-hidden />
-            Purchases
+            Card purchases
+          </span>
+          <span className="flex items-center gap-1.5">
+            <svg className="h-2.5 w-2.5" viewBox="0 0 10 10" aria-hidden>
+              <rect width="10" height="10" rx="2" fill={SPREAD_COLOR} fillOpacity="0.25" />
+              <path d="M-2,8 L8,-2 M2,12 L12,2" stroke={SPREAD_COLOR} strokeWidth="1.6" />
+            </svg>
+            Bills &amp; monthly totals (spread)
           </span>
           <span className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-sm" style={{ background: RETURNED_COLOR }} aria-hidden />
@@ -121,6 +157,38 @@ export default function SpendingRangeChart({ buckets }: { buckets: SpendBucket[]
         )}`}
         onMouseLeave={() => setHover(null)}
       >
+        <defs>
+          <pattern id={hatchId} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="6" height="6" fill={SPREAD_COLOR} fillOpacity="0.22" />
+            <line x1="0" y1="0" x2="0" y2="6" stroke={SPREAD_COLOR} strokeWidth="2" strokeOpacity="0.8" />
+          </pattern>
+        </defs>
+        {shadeX != null && (
+          <g>
+            <rect
+              x={shadeX}
+              y={PAD.top}
+              width={W - PAD.right - shadeX}
+              height={plotH}
+              fill={INK}
+              fillOpacity="0.035"
+            />
+            <line
+              x1={shadeX}
+              x2={shadeX}
+              y1={PAD.top}
+              y2={PAD.top + plotH}
+              stroke={MUTED}
+              strokeOpacity="0.6"
+              strokeDasharray="3 3"
+            />
+            {W - PAD.right - shadeX >= 130 && (
+              <text x={shadeX + 8} y={PAD.top + 12} fontSize="11" fill={MUTED}>
+                No statements imported yet
+              </text>
+            )}
+          </g>
+        )}
         {ticks.map((t) => (
           <g key={t}>
             <line
@@ -146,7 +214,10 @@ export default function SpendingRangeChart({ buckets }: { buckets: SpendBucket[]
         ))}
         {buckets.map((b, i) => {
           const x = PAD.left + slot * i + (slot - barW) / 2;
-          const upH = grown ? zero - y(b.spent) : 0;
+          const spreadH = grown ? zero - y(b.spread) : 0;
+          // Purchases stack on the spread layer with a 2px surface gap.
+          const gapPx = b.spread > 0 && b.spent > 0 ? 2 : 0;
+          const upH = grown ? Math.max(0, zero - y(b.spent) - gapPx) : 0;
           const downH = grown ? y(b.returned) - zero : 0;
           const active = hover === i;
           const r = Math.min(3, barW / 2);
@@ -162,10 +233,22 @@ export default function SpendingRangeChart({ buckets }: { buckets: SpendBucket[]
                 fillOpacity={active ? 0.04 : 0}
                 onMouseEnter={() => setHover(i)}
               />
+              {b.spread > 0 && (
+                <rect
+                  x={x}
+                  y={zero - spreadH}
+                  width={barW}
+                  height={spreadH}
+                  rx={b.spent > 0 ? Math.min(1, r) : r}
+                  fill={`url(#${hatchId})`}
+                  opacity={hover == null || active ? 1 : 0.55}
+                  style={{ pointerEvents: "none", transition }}
+                />
+              )}
               {b.spent > 0 && (
                 <rect
                   x={x}
-                  y={zero - upH}
+                  y={zero - spreadH - gapPx - upH}
                   width={barW}
                   height={upH}
                   rx={r}

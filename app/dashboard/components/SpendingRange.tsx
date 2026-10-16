@@ -67,7 +67,10 @@ function overlap(ym: string, from: string, to: string): [string, string] | null 
 }
 
 type Totals = {
+  /** Card purchases. */
   spent: number;
+  /** Monthly-only amounts (bills, manual card totals) spread over their month. */
+  spread: number;
   returned: number;
   byCard: Map<number, number>;
   byBill: Map<number, number>;
@@ -76,7 +79,7 @@ type Totals = {
 
 /** Net spending in [from, to]; monthly-only amounts count pro rata by day. */
 function totalsFor(days: Day[], monthly: Monthly[], from: string, to: string): Totals {
-  const t: Totals = { spent: 0, returned: 0, byCard: new Map(), byBill: new Map(), byCategory: new Map() };
+  const t: Totals = { spent: 0, spread: 0, returned: 0, byCard: new Map(), byBill: new Map(), byCategory: new Map() };
   const add = <K,>(m: Map<K, number>, k: K, v: number) => m.set(k, (m.get(k) ?? 0) + v);
   for (const d of days) {
     if (d.date < from || d.date > to) continue;
@@ -89,7 +92,7 @@ function totalsFor(days: Day[], monthly: Monthly[], from: string, to: string): T
     const o = overlap(m.month, from, to);
     if (!o) continue;
     const share = (m.amount * dayCount(o[0], o[1])) / daysInMonth(m.month);
-    t.spent += share;
+    t.spread += share;
     if (m.card_id != null) add(t.byCard, m.card_id, share);
     if (m.bill_id != null) add(t.byBill, m.bill_id, share);
     add(t.byCategory, m.category, share);
@@ -99,28 +102,30 @@ function totalsFor(days: Day[], monthly: Monthly[], from: string, to: string): T
 
 /** Buckets of `size` days ending on `to`, so the newest bar is always whole. */
 function bucketsFor(days: Day[], monthly: Monthly[], from: string, to: string, size: number): SpendBucket[] {
-  const perDay = new Map<string, { spent: number; returned: number }>();
-  const bump = (date: string, spent: number, returned: number) => {
-    const v = perDay.get(date) ?? { spent: 0, returned: 0 };
+  const perDay = new Map<string, { spent: number; spread: number; returned: number }>();
+  const bump = (date: string, spent: number, spread: number, returned: number) => {
+    const v = perDay.get(date) ?? { spent: 0, spread: 0, returned: 0 };
     v.spent += spent;
+    v.spread += spread;
     v.returned += returned;
     perDay.set(date, v);
   };
-  for (const d of days) if (d.date >= from && d.date <= to) bump(d.date, d.spent, d.returned);
+  for (const d of days) if (d.date >= from && d.date <= to) bump(d.date, d.spent, 0, d.returned);
   for (const m of monthly) {
     const o = overlap(m.month, from, to);
     if (!o) continue;
     const daily = m.amount / daysInMonth(m.month);
-    for (let d = o[0]; d <= o[1]; d = addDays(d, 1)) bump(d, daily, 0);
+    for (let d = o[0]; d <= o[1]; d = addDays(d, 1)) bump(d, 0, daily, 0);
   }
   const out: SpendBucket[] = [];
   for (let end = to; end >= from; end = addDays(end, -size)) {
     const start = addDays(end, -(size - 1)) < from ? from : addDays(end, -(size - 1));
-    const b: SpendBucket = { start, end, spent: 0, returned: 0 };
+    const b: SpendBucket = { start, end, spent: 0, spread: 0, returned: 0 };
     for (let d = start; d <= end; d = addDays(d, 1)) {
       const v = perDay.get(d);
       if (v) {
         b.spent += v.spent;
+        b.spread += v.spread;
         b.returned += v.returned;
       }
     }
@@ -181,8 +186,13 @@ export default function SpendingRange({
     .filter((d): d is string => !!d)
     .sort()[0];
   const comparable = earliest != null && earliest <= prevFrom;
-  const net = cur.spent + cur.returned;
-  const prevNet = prev.spent + prev.returned;
+  const net = cur.spent + cur.spread + cur.returned;
+  const prevNet = prev.spent + prev.spread + prev.returned;
+  // Card data ends at the newest imported transaction; after it the chart
+  // shows only spread amounts, which would otherwise read as quiet days.
+  const lastImported = days.length > 0 ? days[days.length - 1].date : null;
+  const lastByCard = new Map<number, string>();
+  for (const d of days) lastByCard.set(d.card_id, d.date);
   const changePct = comparable && prevNet > 0 ? ((net - prevNet) / prevNet) * 100 : null;
   const prevLabel = preset === "ytd" ? "same period last year" : `previous ${len} days`;
 
@@ -276,19 +286,30 @@ export default function SpendingRange({
           {changePct != null && (
             <p className="mt-0.5 text-xs" style={{ color: changePct <= 0 ? DELTA_UP : DELTA_DOWN }}>
               {fmtPct(changePct, 0)} vs {prevLabel} ({fmtUSD(prevNet)})
+              {/* A window running past the newest statement is missing card
+                  spending, so it would always look cheaper than the last one. */}
+              {lastImported != null && lastImported < to && (
+                <span className="text-faint"> · card data only through {shortDate(lastImported)}</span>
+              )}
             </p>
           )}
           <p className="mt-2 text-xs text-faint tabular-nums">
-            {fmtUSD(cur.spent)} purchases
+            {fmtUSD(cur.spent)} card purchases
+            {cur.spread > 0 && <> · {fmtUSD(cur.spread)} bills &amp; monthly totals</>}
             {cur.returned !== 0 && <> · {fmtUSD(-cur.returned)} returns &amp; credits</>}
           </p>
           <ul className="mt-4 flex flex-col gap-2 text-sm">
             {cards.map((c) => {
               const amt = cur.byCard.get(c.id);
+              // Say how far this card's statements go when they stop short.
+              const through = lastByCard.get(c.id);
               return (
-                <li key={c.id} className="flex items-baseline gap-2">
+                <li key={c.id} className="flex flex-wrap items-baseline gap-x-2">
                   <span className="text-subtle">{c.name}</span>
                   {c.issuer && <span className="text-xs text-faint">{c.issuer}</span>}
+                  {through && through < to && through >= from && (
+                    <span className="text-xs text-faint">through {shortDate(through)}</span>
+                  )}
                   <span className="ml-auto tabular-nums text-prose">{amt != null ? fmtUSD(amt) : "—"}</span>
                 </li>
               );
@@ -303,7 +324,11 @@ export default function SpendingRange({
           </ul>
         </div>
         <div>
-          <SpendingRangeChart key={`${from}|${to}|${barDays}`} buckets={buckets} />
+          <SpendingRangeChart
+            key={`${from}|${to}|${barDays}`}
+            buckets={buckets}
+            lastImported={lastImported}
+          />
           <details className="mt-2 text-xs text-faint">
             <summary className="cursor-pointer select-none hover:text-subtle">Show as table</summary>
             <div className="mt-2 max-h-56 overflow-y-auto">
@@ -311,7 +336,8 @@ export default function SpendingRange({
                 <thead>
                   <tr className="text-left">
                     <th className="pb-1 font-normal">Dates</th>
-                    <th className="pb-1 text-right font-normal">Purchases</th>
+                    <th className="pb-1 text-right font-normal">Card purchases</th>
+                    <th className="pb-1 text-right font-normal">Bills &amp; monthly</th>
                     <th className="pb-1 text-right font-normal">Returns &amp; credits</th>
                     <th className="pb-1 text-right font-normal">Net</th>
                   </tr>
@@ -323,8 +349,9 @@ export default function SpendingRange({
                         {b.start === b.end ? shortDate(b.start) : `${shortDate(b.start)} – ${shortDate(b.end)}`}
                       </td>
                       <td className="py-1 text-right">{fmtUSD(b.spent)}</td>
+                      <td className="py-1 text-right">{b.spread ? fmtUSD(b.spread) : "—"}</td>
                       <td className="py-1 text-right">{b.returned ? fmtUSD(-b.returned) : "—"}</td>
-                      <td className="py-1 text-right text-prose">{fmtUSD(b.spent + b.returned)}</td>
+                      <td className="py-1 text-right text-prose">{fmtUSD(b.spent + b.spread + b.returned)}</td>
                     </tr>
                   ))}
                 </tbody>
