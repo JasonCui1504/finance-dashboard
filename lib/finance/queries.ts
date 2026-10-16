@@ -557,15 +557,6 @@ export type CategorySpendPoint = CategorySpend & { month: string };
  * Category spend for every month that has transactions, so the dashboard can
  * switch months client-side without a refetch.
  */
-/** Card spend per card per month (imported transactions, else the manual monthly amount). */
-export async function getCardSpendByMonth(): Promise<{ card_id: number; month: string; total: number }[]> {
-  const totals = await cardMonthTotals();
-  return [...totals.entries()].map(([key, total]) => {
-    const [cardId, month] = key.split("|");
-    return { card_id: Number(cardId), month, total };
-  });
-}
-
 /**
  * Card benefit credits get their own category in breakdowns: they reimburse
  * spending elsewhere (hotels, travel…), so filed under whatever the statement
@@ -573,6 +564,81 @@ export async function getCardSpendByMonth(): Promise<{ card_id: number; month: s
  */
 export const CARD_CREDITS = "Card credits";
 const CATEGORY_SQL = `CASE WHEN is_card_credit = 1 THEN '${CARD_CREDITS}' ELSE category END`;
+
+/** One day's card activity for one card and category: purchases and returns apart. */
+export type SpendDay = {
+  date: string;
+  card_id: number;
+  category: string;
+  /** Charges (positive). */
+  spent: number;
+  /** Refunds and statement credits (negative). */
+  returned: number;
+};
+
+/**
+ * Spending known only as a monthly total, spread over its month by the
+ * range view: a card's manual amount for a month with no imported
+ * transactions (they win, as in cardMonthTotals), and logged bills.
+ */
+export type MonthlySpendAmount = {
+  month: string;
+  card_id: number | null;
+  bill_id: number | null;
+  category: string;
+  amount: number;
+};
+
+/** Everything the date-range spending view needs, in one round trip. */
+export async function getSpendingActivity(): Promise<{
+  days: SpendDay[];
+  monthly: MonthlySpendAmount[];
+}> {
+  const db = await getDb();
+  const [days, manual, bills] = await Promise.all([
+    db.execute(
+      `SELECT date, card_id, ${CATEGORY_SQL} AS category,
+              SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS spent,
+              SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS returned
+       FROM transactions
+       GROUP BY date, card_id, 3
+       ORDER BY date`
+    ),
+    db.execute(
+      `SELECT p.card_id, p.month, p.amount FROM card_payments p
+       WHERE NOT EXISTS (
+         SELECT 1 FROM transactions t
+         WHERE t.card_id = p.card_id AND substr(t.date, 1, 7) = p.month
+       )`
+    ),
+    db.execute("SELECT bill_id, month, amount FROM bill_payments"),
+  ]);
+  return {
+    days: days.rows.map((r) => ({
+      date: String(r.date),
+      card_id: num(r.card_id),
+      category: String(r.category),
+      spent: num(r.spent),
+      returned: num(r.returned),
+    })),
+    monthly: [
+      ...manual.rows.map((r) => ({
+        month: String(r.month),
+        card_id: num(r.card_id),
+        bill_id: null,
+        category: "Card total (no statement)",
+        amount: num(r.amount),
+      })),
+      ...bills.rows.map((r) => ({
+        month: String(r.month),
+        card_id: null,
+        bill_id: num(r.bill_id),
+        category: "Bills",
+        amount: num(r.amount),
+      })),
+    ],
+  };
+}
 
 export async function getCategorySpendByMonth(): Promise<CategorySpendPoint[]> {
   const db = await getDb();

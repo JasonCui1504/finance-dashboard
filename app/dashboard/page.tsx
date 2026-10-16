@@ -7,7 +7,6 @@ import { FINANCE_COOKIE, verifySessionToken } from "../../lib/finance/auth";
 import {
   cdCurrentValue,
   cdMaturityValue,
-  getCardSpendByMonth,
   getCardSpendForMonth,
   getDailySpending,
   getTickerIndustries,
@@ -50,7 +49,7 @@ import AllocationDonut from "./components/AllocationDonut";
 import CardCreditMeters from "./components/CardCreditMeters";
 import CdLadder from "./components/CdLadder";
 import ProjectionCard from "./components/ProjectionCard";
-import SpendingMonthCard from "./components/SpendingMonthCard";
+import SpendingRangeSection from "./components/SpendingRangeSection";
 import StatTile from "./components/StatTile";
 import WarningBanner from "./components/WarningBanner";
 import { DELTA_DOWN, DELTA_UP, fmtDate, fmtPct, fmtUSD, SERIES } from "./components/format";
@@ -154,7 +153,6 @@ export default async function DashboardPage() {
     untaggedCredits,
     bills,
     billPayments,
-    cardMonths,
     industries,
     dailySpending,
     warnings,
@@ -179,7 +177,6 @@ export default async function DashboardPage() {
     getUntaggedCardCredits(thisMonth.slice(0, 4)),
     listBills(),
     listBillPayments(),
-    getCardSpendByMonth(),
     getTickerIndustries(),
     getDailySpending(heatmapFrom),
     listDashboardWarnings(),
@@ -642,16 +639,12 @@ export default async function DashboardPage() {
       )}
 
       {(cards.length > 0 || bills.length > 0) && (
-        <Card title="Spending by month" delay={340}>
-          <SpendingMonthCard
+        <Card title="Spending" delay={340}>
+          <SpendingRangeSection
             cards={cards.map((c) => ({ id: c.id, name: c.name, issuer: c.issuer }))}
-            cardMonths={cardMonths}
-            bills={bills.map((b) => ({ id: b.id, name: b.name, amount: b.amount }))}
-            billPayments={billPayments.map((p) => ({ bill_id: p.bill_id, month: p.month, amount: p.amount }))}
-            monthlySpending={monthlySpending}
-            categorySpendByMonth={categorySpendByMonth}
+            bills={bills.map((b) => ({ id: b.id, name: b.name }))}
             budgets={budgets}
-            currentMonth={thisMonth}
+            today={today}
           />
           {(cardBenefits.length > 0 || cardCredits.count > 0) && (
             <div className="mt-6 border-t border-line pt-5">
@@ -665,8 +658,9 @@ export default async function DashboardPage() {
             </div>
           )}
           <p className="mt-4 text-xs text-faint">
-            Spending is tracked separately from net worth — it&apos;s a monthly
-            cash-flow view, not a balance-sheet liability.
+            Spending is tracked separately from net worth — it&apos;s a cash-flow
+            view, not a balance-sheet liability. Amounts known only per month
+            (manual card totals, bills) are spread evenly over their month.
           </p>
         </Card>
       )}
