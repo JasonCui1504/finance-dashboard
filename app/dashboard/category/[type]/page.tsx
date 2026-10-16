@@ -15,6 +15,7 @@ import {
   type AccountType,
   type Snapshot,
 } from "../../../../lib/finance/queries";
+import { CASH_TICKER } from "../../../../lib/finance/prices";
 import NetWorthChart from "../../components/NetWorthChart";
 import CdLadder from "../../components/CdLadder";
 import { DELTA_DOWN, DELTA_UP, fmtDate, fmtPct, fmtUSD, SERIES } from "../../components/format";
@@ -55,6 +56,40 @@ function Card({ title, children }: { title?: string; children: React.ReactNode }
   );
 }
 
+type AccountTotals = Map<number, { value: number; cash: number }>;
+
+/**
+ * One account in a list. An account holding positions is valued from them
+ * (cash included) — the same rule the snapshot uses — so its typed-in balance
+ * only shows for accounts without any.
+ */
+function AccountItem({
+  account: a,
+  totals,
+}: {
+  account: Awaited<ReturnType<typeof listAccounts>>[number];
+  totals: AccountTotals;
+}) {
+  const t = totals.get(a.id);
+  return (
+    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+      <span className="text-prose">{a.name}</span>
+      <span className="text-xs text-faint">
+        {a.institution}
+        {a.apy != null ? ` · ${a.apy}% APY` : ""}
+      </span>
+      <span className="ml-auto flex items-baseline gap-2 tabular-nums">
+        {t && t.cash > 0 && (
+          <span className="text-xs text-faint">{fmtUSD(t.cash)} cash</span>
+        )}
+        <span className="text-subtle">
+          {t ? fmtUSD(t.value) : a.last_balance != null ? fmtUSD(a.last_balance) : "—"}
+        </span>
+      </span>
+    </li>
+  );
+}
+
 export default async function CategoryDetailPage({
   params,
 }: {
@@ -86,6 +121,21 @@ export default async function CategoryDetailPage({
   const catAccounts = cfg.accountType
     ? accounts.filter((a) => a.type === cfg.accountType)
     : [];
+
+  // Value and cash held in each account's positions.
+  const totals: AccountTotals = new Map();
+  for (const h of holdings) {
+    if (h.account_id == null) continue;
+    const price = prices.get(h.ticker.toUpperCase())?.price ?? h.manual_price ?? 0;
+    const t = totals.get(h.account_id) ?? { value: 0, cash: 0 };
+    t.value += h.shares * price;
+    if (h.ticker.toUpperCase() === CASH_TICKER) t.cash += h.shares * price;
+    totals.set(h.account_id, t);
+  }
+  // Positions in retirement accounts belong on the Retirement page.
+  const retirementIds = new Set(
+    accounts.filter((a) => a.type === "retirement").map((a) => a.id)
+  );
 
   return (
     <div className="flex flex-col gap-5">
@@ -132,9 +182,13 @@ export default async function CategoryDetailPage({
       {/* Brokerage: holdings + manual brokerage balances */}
       {type === "brokerage" && (
         <BrokerageBreakdown
-          holdings={holdings}
+          holdings={holdings.filter(
+            (h) => h.account_id == null || !retirementIds.has(h.account_id)
+          )}
           prices={prices}
           accounts={catAccounts}
+          allAccounts={accounts}
+          totals={totals}
         />
       )}
 
@@ -146,16 +200,7 @@ export default async function CategoryDetailPage({
           ) : (
             <ul className="flex flex-col gap-2.5 text-sm">
               {catAccounts.map((a) => (
-                <li key={a.id} className="flex items-baseline gap-2">
-                  <span className="text-prose">{a.name}</span>
-                  <span className="text-xs text-faint">
-                    {a.institution}
-                    {a.apy != null ? ` · ${a.apy}% APY` : ""}
-                  </span>
-                  <span className="ml-auto text-subtle tabular-nums">
-                    {a.last_balance != null ? fmtUSD(a.last_balance) : "—"}
-                  </span>
-                </li>
+                <AccountItem key={a.id} account={a} totals={totals} />
               ))}
             </ul>
           )}
@@ -232,11 +277,16 @@ function BrokerageBreakdown({
   holdings,
   prices,
   accounts,
+  allAccounts,
+  totals,
 }: {
   holdings: Awaited<ReturnType<typeof listHoldings>>;
   prices: Awaited<ReturnType<typeof getLatestPrices>>;
   accounts: Awaited<ReturnType<typeof listAccounts>>;
+  allAccounts: Awaited<ReturnType<typeof listAccounts>>;
+  totals: AccountTotals;
 }) {
+  const accountName = new Map(allAccounts.map((a) => [a.id, a.name]));
   const rows = holdings.map((h) => {
     const q = prices.get(h.ticker.toUpperCase());
     const price = q?.price ?? h.manual_price ?? null;
@@ -263,8 +313,15 @@ function BrokerageBreakdown({
               <tbody className="tabular-nums">
                 {rows.map((h) => (
                   <tr key={h.id} className="border-t border-line">
-                    <td className="py-2 text-prose">{h.ticker}</td>
-                    <td className="py-2 text-right text-subtle">{h.shares}</td>
+                    <td className="py-2 text-prose">
+                      {h.ticker}{" "}
+                      <span className="text-xs text-faint">
+                        {(h.account_id != null && accountName.get(h.account_id)) || h.broker || ""}
+                      </span>
+                    </td>
+                    <td className="py-2 text-right text-subtle">
+                      {h.ticker === CASH_TICKER ? "cash" : h.shares}
+                    </td>
                     <td className="py-2 text-right text-subtle">
                       {h.price != null ? fmtUSD(h.price, 2) : "—"}
                     </td>
@@ -287,16 +344,10 @@ function BrokerageBreakdown({
         </Card>
       )}
       {accounts.length > 0 && (
-        <Card title="Brokerage accounts (cash / manual balances)">
+        <Card title="Brokerage accounts">
           <ul className="flex flex-col gap-2.5 text-sm">
             {accounts.map((a) => (
-              <li key={a.id} className="flex items-baseline gap-2">
-                <span className="text-prose">{a.name}</span>
-                <span className="text-xs text-faint">{a.institution}</span>
-                <span className="ml-auto text-subtle tabular-nums">
-                  {a.last_balance != null ? fmtUSD(a.last_balance) : "—"}
-                </span>
-              </li>
+              <AccountItem key={a.id} account={a} totals={totals} />
             ))}
           </ul>
         </Card>

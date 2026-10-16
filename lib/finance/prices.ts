@@ -45,6 +45,10 @@ async function fetchFinnhub(ticker: string): Promise<Quote> {
     ticker
   )}&token=${key}`;
   const res = await fetch(url);
+  // 403 = the free plan doesn't cover this symbol (e.g. mutual funds like FNILX).
+  if (res.status === 403) {
+    throw new Error(`No live quote for ${ticker}: Finnhub's plan doesn't cover it — using its manual price`);
+  }
   if (!res.ok) throw new Error(`Finnhub HTTP ${res.status} for ${ticker}`);
   const data = await res.json();
   const price = Number(data?.c);
@@ -61,8 +65,9 @@ async function fetchFinnhub(ticker: string): Promise<Quote> {
 
 /**
  * Finnhub's industry label for a ticker, or "" when it has none (ETFs and
- * funds return an empty profile). Throws on HTTP errors such as rate limits,
- * so the caller can stop and pick the rest up on the next run.
+ * funds return an empty profile; symbols outside the plan return 403). Throws
+ * on other HTTP errors such as rate limits, so the caller can stop and pick
+ * the rest up on the next run.
  */
 export async function fetchIndustry(ticker: string): Promise<string> {
   const key = process.env.FINNHUB_API_KEY;
@@ -70,6 +75,9 @@ export async function fetchIndustry(ticker: string): Promise<string> {
     ticker
   )}&token=${key}`;
   const res = await fetch(url);
+  // Not on the plan: cache "no industry" rather than retrying (and stopping
+  // the lookup for every ticker after it) on each run.
+  if (res.status === 403) return "";
   if (!res.ok) throw new Error(`Finnhub profile HTTP ${res.status} for ${ticker}`);
   const data = await res.json();
   return typeof data?.finnhubIndustry === "string" ? data.finnhubIndustry : "";
