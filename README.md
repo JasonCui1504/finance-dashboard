@@ -214,6 +214,28 @@ insights: average monthly spend, this month vs. that average, your highest
 month, and the top category this month. Average spend uses complete prior
 months (the current partial month is excluded so it isn't skewed low).
 
+## AI insights (local Llama via Ollama)
+
+The "AI insights" card near the top of the dashboard asks a local model for a
+handful of plain-English observations: runway, budget overruns, spending vs.
+average, concentration, CDs maturing soon, net-worth trend. Click **Generate
+insights** to run it; nothing is generated on page load.
+
+- **Local only.** The model runs in the [Ollama](https://ollama.com) app on this
+  Mac and is reached over loopback (`POST /api/finance/insights`, session-gated,
+  streams plain text). Nothing is sent off the machine.
+- **Read-only, aggregates only.** The page builds a small summary of totals it
+  already shows (`InsightFacts` in `lib/finance/insights.ts`). Holdings appear
+  only as their top tickers by percent of holdings. Account names,
+  institutions and individual transactions are never sent, and nothing is
+  written to the database.
+- **Setup.** Install the Ollama app, run `ollama pull llama3` once, and keep
+  Ollama running in the **same macOS account** that runs the dashboard. A model
+  served from a background (fast-user-switched) account can't use the GPU and
+  fails with "failed to initialize the Metal library".
+- **Config** (optional, in `.env.local`): `OLLAMA_MODEL` (default `llama3`,
+  e.g. `llama3.1:8b`) and `OLLAMA_URL` (default `http://127.0.0.1:11434`).
+
 ## Transaction search & filter
 
 Manage → Spending → "Recent transactions" has a search box (matches the

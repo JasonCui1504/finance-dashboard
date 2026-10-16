@@ -37,7 +37,9 @@ import {
 } from "../../lib/finance/queries";
 import { summarizePaychecks } from "../../lib/finance/paychecks";
 import { summarizeTax } from "../../lib/finance/tax";
+import type { InsightFacts } from "../../lib/finance/insights";
 import AccessTimeline from "./components/AccessTimeline";
+import AiInsights from "./components/AiInsights";
 import CashFlowViews from "./components/CashFlowViews";
 import CdInterestChart from "./components/CdInterestChart";
 import Concentration from "./components/Concentration";
@@ -416,6 +418,80 @@ export default async function DashboardPage() {
     ),
   ];
 
+  // --- Summary handed to the local model for AI insights (aggregates only) ---
+  const round = (n: number) => Math.round(n);
+  const round1 = (n: number | null) => (n == null ? null : Math.round(n * 10) / 10);
+  const netWorthChangeSince = (daysAgo: number) => {
+    const cutoff = new Date(now.getTime() - daysAgo * 86_400_000).toISOString().slice(0, 10);
+    const base = [...history].reverse().find((s) => s.date <= cutoff);
+    const baseValue = base ? visibleNetWorth(base) : 0;
+    return baseValue > 0 ? ((netWorthNow - baseValue) / baseValue) * 100 : null;
+  };
+  const budgetFor = new Map(budgets.map((b) => [b.category, b.monthly_limit]));
+  const spendCategories = categorySpend.filter((c) => c.category !== CARD_CREDITS && c.total > 0);
+  const tickerTotal = [...byTicker.values()].reduce((s, h) => s + h.value, 0);
+  const in90Days = new Date(now.getTime() + 90 * 86_400_000).toISOString().slice(0, 10);
+  const insightFacts: InsightFacts = {
+    asOf: today,
+    netWorth: {
+      total: round(netWorthNow),
+      byCategory: Object.fromEntries(
+        visibleComponents.map((c) => [c.label, snapshot ? round(c.of(snapshot)) : 0])
+      ),
+      change30dPct: round1(netWorthChangeSince(30)),
+      change1yPct: round1(netWorthChangeSince(365)),
+    },
+    cash: { bankCash: round(cashOnHand), runwayMonths: round1(runwayMonths) },
+    spending: {
+      avgMonthly: round(avgMonthlySpend),
+      thisMonthSoFar: round(thisMonthSpend),
+      dayOfMonth: now.getDate(),
+      daysInMonth: new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate(),
+      thisVsAvgPct: round1(thisVsAvgPct),
+      recentMonths: priorMonths.slice(-6).map((m) => ({ month: m.month, total: round(m.total) })),
+      topCategoriesThisMonth: spendCategories.slice(0, 6).map((c) => ({
+        category: c.category,
+        spent: round(c.total),
+        budget: budgetFor.get(c.category) ?? null,
+      })),
+      overBudget: spendCategories
+        .filter((c) => budgetFor.has(c.category) && c.total > budgetFor.get(c.category)!)
+        .map((c) => ({
+          category: c.category,
+          spent: round(c.total),
+          budget: budgetFor.get(c.category)!,
+        })),
+    },
+    income: {
+      monthlyTakeHome: monthlyTakeHome > 0 ? round(monthlyTakeHome) : null,
+      savingsRatePct: round1(savingsRate),
+      ytdGross: pay.paychecks.length > 0 ? round(pay.ytdGross) : null,
+      ytdNet: pay.paychecks.length > 0 ? round(pay.ytdNet) : null,
+      effectiveTaxRatePct: pay.effectiveRate != null ? round1(pay.effectiveRate * 100) : null,
+    },
+    cds: {
+      count: showCds ? cds.length : 0,
+      lockedValue: access ? round(access.cdsLocked) : 0,
+      maturingWithin90Days: lockedCds
+        .filter((cd) => cd.maturity_date <= in90Days)
+        .map((cd) => ({
+          date: cd.maturity_date,
+          maturityValue: round(cdMaturityValue(cd)),
+          apy: cd.apy,
+        })),
+    },
+    holdings: {
+      positions: byTicker.size,
+      topPositions:
+        tickerTotal > 0
+          ? [...byTicker.values()]
+              .sort((a, b) => b.value - a.value)
+              .slice(0, 5)
+              .map((h) => ({ ticker: h.ticker, pctOfHoldings: round1((h.value / tickerTotal) * 100)! }))
+          : [],
+    },
+  };
+
   // Section groupings shown under the projection.
   const showSpending =
     cards.length > 0 ||
@@ -494,6 +570,10 @@ export default async function DashboardPage() {
               />
             ))}
           </div>
+
+          <Card title="AI insights" delay={100}>
+            <AiInsights facts={insightFacts} />
+          </Card>
 
           <Card title="Net worth over time" delay={120}>
             <NetWorthChart data={chartData} />
