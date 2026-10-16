@@ -10,8 +10,8 @@ export type SpendBucket = {
   end: string;
   /** Card purchases (≥ 0). */
   spent: number;
-  /** Bills and manual monthly card totals, spread evenly over their month (≥ 0). */
-  spread: number;
+  /** Bills and manual monthly card totals, counted on the 1st of their month (≥ 0). */
+  fixed: number;
   /** Returns and credits (≤ 0). */
   returned: number;
 };
@@ -22,9 +22,9 @@ const PAD = { top: 16, right: 12, bottom: 28, left: 56 };
 // Dark-mode steps validated against the card surface (dataviz palette check).
 export const SPENT_COLOR = "#d55181";
 export const RETURNED_COLOR = "#3987e5";
-// Spread amounts are an even split of a monthly figure, not real daily
-// spending: a muted neutral with a hatch, so they read as background.
-const SPREAD_COLOR = "#8aa498";
+// Bills and monthly totals aren't card purchases: a muted neutral with a
+// hatch keeps them visibly apart.
+export const FIXED_COLOR = "#8aa498";
 const GRID = "#243028";
 const MUTED = "#8aa498";
 const INK = "#deeade";
@@ -49,7 +49,7 @@ function bucketLabel(b: SpendBucket): string {
 
 /**
  * Spending over a date range in buckets of a few days: card purchases rise
- * above the baseline on top of the spread monthly amounts, returns and
+ * above the baseline on top of bills and monthly totals, returns and
  * credits hang below it, so a refund shows up where it landed instead of
  * silently shrinking a month. Days after the newest imported statement are
  * shaded, so a gap reads as "not imported yet" rather than "spent nothing".
@@ -62,7 +62,7 @@ export default function SpendingRangeChart({
   /** Date of the newest imported card transaction, if any. */
   lastImported: string | null;
 }) {
-  const hatchId = `spread-hatch-${useId().replace(/:/g, "")}`;
+  const hatchId = `fixed-hatch-${useId().replace(/:/g, "")}`;
   const [{ grown, instant }, setAnim] = useState({ grown: false, instant: false });
   const [hover, setHover] = useState<number | null>(null);
   useEffect(() => {
@@ -71,7 +71,7 @@ export default function SpendingRangeChart({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const maxUp = Math.max(...buckets.map((b) => b.spent + b.spread), 0);
+  const maxUp = Math.max(...buckets.map((b) => b.spent + b.fixed), 0);
   const maxDown = Math.max(...buckets.map((b) => -b.returned), 0);
   if (buckets.length === 0 || (maxUp === 0 && maxDown === 0)) {
     return <p className="py-8 text-center text-sm text-faint">No card activity in this range.</p>;
@@ -108,9 +108,9 @@ export default function SpendingRangeChart({
             <span className="tabular-nums">
               <span className="text-prose">{fmtUSD(sel.spent)}</span> card purchases
             </span>
-            {sel.spread > 0 && (
+            {sel.fixed > 0 && (
               <span className="tabular-nums">
-                <span className="text-prose">{fmtUSD(sel.spread)}</span> bills &amp; monthly
+                <span className="text-prose">{fmtUSD(sel.fixed)}</span> bills &amp; monthly
               </span>
             )}
             {sel.returned !== 0 && (
@@ -119,7 +119,7 @@ export default function SpendingRangeChart({
               </span>
             )}
             <span className="tabular-nums">
-              net <span className="text-prose">{fmtUSD(sel.spent + sel.spread + sel.returned)}</span>
+              net <span className="text-prose">{fmtUSD(sel.spent + sel.fixed + sel.returned)}</span>
             </span>
           </>
         ) : (
@@ -137,10 +137,10 @@ export default function SpendingRangeChart({
           </span>
           <span className="flex items-center gap-1.5">
             <svg className="h-2.5 w-2.5" viewBox="0 0 10 10" aria-hidden>
-              <rect width="10" height="10" rx="2" fill={SPREAD_COLOR} fillOpacity="0.25" />
-              <path d="M-2,8 L8,-2 M2,12 L12,2" stroke={SPREAD_COLOR} strokeWidth="1.6" />
+              <rect width="10" height="10" rx="2" fill={FIXED_COLOR} fillOpacity="0.25" />
+              <path d="M-2,8 L8,-2 M2,12 L12,2" stroke={FIXED_COLOR} strokeWidth="1.6" />
             </svg>
-            Bills &amp; monthly totals (spread)
+            Bills &amp; monthly totals
           </span>
           <span className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-sm" style={{ background: RETURNED_COLOR }} aria-hidden />
@@ -159,8 +159,8 @@ export default function SpendingRangeChart({
       >
         <defs>
           <pattern id={hatchId} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <rect width="6" height="6" fill={SPREAD_COLOR} fillOpacity="0.22" />
-            <line x1="0" y1="0" x2="0" y2="6" stroke={SPREAD_COLOR} strokeWidth="2" strokeOpacity="0.8" />
+            <rect width="6" height="6" fill={FIXED_COLOR} fillOpacity="0.22" />
+            <line x1="0" y1="0" x2="0" y2="6" stroke={FIXED_COLOR} strokeWidth="2" strokeOpacity="0.8" />
           </pattern>
         </defs>
         {shadeX != null && (
@@ -183,7 +183,19 @@ export default function SpendingRangeChart({
               strokeDasharray="3 3"
             />
             {W - PAD.right - shadeX >= 130 && (
-              <text x={shadeX + 8} y={PAD.top + 12} fontSize="11" fill={MUTED}>
+              // Right-aligned with a surface halo, so a bill landing on the
+              // 1st inside the shaded area can't swallow it.
+              <text
+                x={W - PAD.right - 6}
+                y={PAD.top + 12}
+                textAnchor="end"
+                fontSize="11"
+                fill={MUTED}
+                stroke="#141c17"
+                strokeWidth="4"
+                strokeLinejoin="round"
+                paintOrder="stroke"
+              >
                 No statements imported yet
               </text>
             )}
@@ -214,9 +226,9 @@ export default function SpendingRangeChart({
         ))}
         {buckets.map((b, i) => {
           const x = PAD.left + slot * i + (slot - barW) / 2;
-          const spreadH = grown ? zero - y(b.spread) : 0;
-          // Purchases stack on the spread layer with a 2px surface gap.
-          const gapPx = b.spread > 0 && b.spent > 0 ? 2 : 0;
+          const fixedH = grown ? zero - y(b.fixed) : 0;
+          // Purchases stack on the fixed layer with a 2px surface gap.
+          const gapPx = b.fixed > 0 && b.spent > 0 ? 2 : 0;
           const upH = grown ? Math.max(0, zero - y(b.spent) - gapPx) : 0;
           const downH = grown ? y(b.returned) - zero : 0;
           const active = hover === i;
@@ -233,12 +245,12 @@ export default function SpendingRangeChart({
                 fillOpacity={active ? 0.04 : 0}
                 onMouseEnter={() => setHover(i)}
               />
-              {b.spread > 0 && (
+              {b.fixed > 0 && (
                 <rect
                   x={x}
-                  y={zero - spreadH}
+                  y={zero - fixedH}
                   width={barW}
-                  height={spreadH}
+                  height={fixedH}
                   rx={b.spent > 0 ? Math.min(1, r) : r}
                   fill={`url(#${hatchId})`}
                   opacity={hover == null || active ? 1 : 0.55}
@@ -248,7 +260,7 @@ export default function SpendingRangeChart({
               {b.spent > 0 && (
                 <rect
                   x={x}
-                  y={zero - spreadH - gapPx - upH}
+                  y={zero - fixedH - gapPx - upH}
                   width={barW}
                   height={upH}
                   rx={r}

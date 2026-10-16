@@ -17,8 +17,10 @@ const GAP_RAD = 0.035; // ~2px surface gap between segments
 // 6–8 band, which the legend's labels and values cover as secondary encoding.
 const SLOTS = ["#17a06b", "#3b82d6", "#d9730d", "#c2255c"];
 const OTHER = "#8aa498";
-/** Beyond the four coloured slots everything folds into one muted "Other". */
+/** Beyond the four coloured slots everything shares one muted slice. */
 const MAX_SLICES = SLOTS.length;
+/** The catch-all spending category (lib/finance/categories.ts). */
+const CATCH_ALL = "Other";
 
 function arcPath(cx: number, cy: number, r: number, a0: number, a1: number): string {
   const large = a1 - a0 > Math.PI ? 1 : 0;
@@ -51,19 +53,30 @@ export default function CategoryDonut({ slices }: { slices: Slice[] }) {
     return <p className="text-sm text-faint">No spend to chart for this period.</p>;
   }
 
-  const head = positive.slice(0, MAX_SLICES);
-  const tail = positive.slice(MAX_SLICES);
+  // The catch-all "Other" category never takes a coloured slot: it shares
+  // the muted slice, so a named category gets the colour instead and the
+  // legend never shows "Other" twice.
+  const named = positive.filter((s) => s.label !== CATCH_ALL);
+  const catchAll = positive.find((s) => s.label === CATCH_ALL);
+  const head = named.slice(0, MAX_SLICES);
+  const rest = [...named.slice(MAX_SLICES), ...(catchAll ? [catchAll] : [])].sort(
+    (a, b) => b.value - a.value
+  );
+  // One leftover keeps its own name; several fold into "More (N)", listed below it.
+  const tail = rest.length > 1 ? rest : [];
   const visible: (Slice & { color: string })[] = head.map((s, i) => ({
     ...s,
     color: SLOTS[i],
   }));
+  if (rest.length === 1) visible.push({ ...rest[0], color: OTHER });
   if (tail.length > 0) {
     visible.push({
-      label: `Other (${tail.length})`,
+      label: `More (${tail.length})`,
       value: tail.reduce((sum, s) => sum + s.value, 0),
       color: OTHER,
     });
   }
+  const foldIndex = tail.length > 0 ? visible.length - 1 : -1;
 
   const total = visible.reduce((sum, s) => sum + s.value, 0);
   const c = SIZE / 2;
@@ -108,7 +121,7 @@ export default function CategoryDonut({ slices }: { slices: Slice[] }) {
           >
             <title>
               {`${a.label}: ${fmtUSD(a.value)} (${((a.value / total) * 100).toFixed(1)}%)` +
-                (i === MAX_SLICES && tail.length > 0
+                (i === foldIndex
                   ? ` — ${tail.map((t) => t.label).join(", ")}`
                   : "")}
             </title>
@@ -149,8 +162,8 @@ export default function CategoryDonut({ slices }: { slices: Slice[] }) {
                 {((s.value / total) * 100).toFixed(0)}%
               </span>
             </div>
-            {/* Name what "Other" holds — the slice only has room for one colour. */}
-            {i === MAX_SLICES &&
+            {/* Name what "More" holds — the slice only has room for one colour. */}
+            {i === foldIndex &&
               tail.map((t) => (
                 <div key={t.label} className="flex items-center gap-2.5 pl-5 text-xs">
                   <span className="text-faint">{t.label}</span>

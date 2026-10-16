@@ -660,7 +660,7 @@ export default async function DashboardPage() {
           <p className="mt-4 text-xs text-faint">
             Spending is tracked separately from net worth — it&apos;s a cash-flow
             view, not a balance-sheet liability. Amounts known only per month
-            (manual card totals, bills) are spread evenly over their month.
+            (manual card totals, bills) count on the 1st of their month.
           </p>
         </Card>
       )}
