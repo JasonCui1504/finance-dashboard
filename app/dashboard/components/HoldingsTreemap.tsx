@@ -5,6 +5,8 @@ import { fmtPct, fmtUSD } from "./format";
 
 type Item = { ticker: string; value: number; dayPct: number | null };
 type Rect = Item & { x: number; y: number; w: number; h: number };
+/** value includes retirementValue, the part held in retirement accounts. */
+type Holding = Item & { retirementValue: number };
 
 const W = 800;
 const H = 380;
@@ -72,11 +74,54 @@ function squarify(items: Item[], x: number, y: number, w: number, h: number): Re
   return out;
 }
 
-export default function HoldingsTreemap({ items }: { items: Item[] }) {
+export default function HoldingsTreemap({ items }: { items: Holding[] }) {
   const [hover, setHover] = useState<string | null>(null);
-  const sorted = items.filter((i) => i.value > 0).sort((a, b) => b.value - a.value);
+  const [withRetirement, setWithRetirement] = useState(true);
+  const hasRetirement = items.some((i) => i.retirementValue > 0);
+  const include = withRetirement || !hasRetirement;
+  // Drop a ticker's retirement part when excluded; one held only in an IRA
+  // falls to ~0 and is filtered out (the cent threshold absorbs float dust).
+  const sorted: Item[] = items
+    .map((i) => ({
+      ticker: i.ticker,
+      dayPct: i.dayPct,
+      value: include ? i.value : i.value - i.retirementValue,
+    }))
+    .filter((i) => i.value > 0.005)
+    .sort((a, b) => b.value - a.value);
+
+  const toggle = hasRetirement && (
+    <div className="flex justify-end">
+      <div className="flex gap-1 rounded-md border border-line p-0.5">
+        {[
+          { on: true, label: "Include retirement" },
+          { on: false, label: "Exclude retirement" },
+        ].map((o) => (
+          <button
+            key={o.label}
+            type="button"
+            aria-pressed={withRetirement === o.on}
+            onClick={() => setWithRetirement(o.on)}
+            className={`rounded px-2.5 py-1 text-xs transition-colors ${
+              withRetirement === o.on ? "bg-lift text-prose" : "text-faint hover:text-subtle"
+            }`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
   if (sorted.length === 0) {
-    return <p className="py-8 text-center text-sm text-faint">No priced holdings yet.</p>;
+    return (
+      <div className="flex flex-col gap-2">
+        {toggle}
+        <p className="py-8 text-center text-sm text-faint">
+          {include ? "No priced holdings yet." : "No holdings outside retirement accounts."}
+        </p>
+      </div>
+    );
   }
   const total = sorted.reduce((s, i) => s + i.value, 0);
   const rects = squarify(sorted, 0, 0, W, H);
@@ -84,6 +129,7 @@ export default function HoldingsTreemap({ items }: { items: Item[] }) {
 
   return (
     <div className="flex flex-col gap-2">
+      {toggle}
       <div className="flex min-h-[18px] flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-faint">
         {sel ? (
           <>
@@ -172,8 +218,12 @@ export default function HoldingsTreemap({ items }: { items: Item[] }) {
         })}
       </svg>
       <p className="text-xs" style={{ color: MUTED }}>
-        Positions in retirement accounts are included; tickers held at more than
-        one broker are combined.
+        {!hasRetirement
+          ? "Tickers"
+          : include
+            ? "Positions in retirement accounts are included; tickers"
+            : "Retirement accounts are left out; tickers"}{" "}
+        held at more than one broker are combined.
       </p>
     </div>
   );

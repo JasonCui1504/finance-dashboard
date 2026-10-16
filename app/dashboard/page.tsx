@@ -328,14 +328,24 @@ export default async function DashboardPage() {
   // Every priced position, combined by ticker, skipping hidden categories.
   // Unattached holdings count as brokerage; attached ones take their account's type.
   const accountType = new Map(accounts.map((a) => [a.id, a.type]));
-  const byTicker = new Map<string, { ticker: string; value: number; dayPct: number | null }>();
+  // retirementValue is the part held in retirement accounts, so the map can
+  // leave it out on request.
+  const byTicker = new Map<
+    string,
+    { ticker: string; value: number; retirementValue: number; dayPct: number | null }
+  >();
   for (const h of holdingRows) {
     if (h.value == null || h.value <= 0) continue;
     const type = h.account_id == null ? "brokerage" : (accountType.get(h.account_id) ?? "brokerage");
     if (hidden.has(type as NetWorthCategory)) continue;
     const t = h.ticker.toUpperCase();
     const prev = byTicker.get(t);
-    byTicker.set(t, { ticker: t, value: (prev?.value ?? 0) + h.value, dayPct: h.dayPct });
+    byTicker.set(t, {
+      ticker: t,
+      value: (prev?.value ?? 0) + h.value,
+      retirementValue: (prev?.retirementValue ?? 0) + (type === "retirement" ? h.value : 0),
+      dayPct: h.dayPct,
+    });
   }
 
   // Last 12 months of logged take-home (and the tax withheld from it) beside
