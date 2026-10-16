@@ -136,6 +136,15 @@ const SCHEMA = [
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   )`,
+  // Notes pinned to the top of the dashboard until dismissed (e.g. "cost basis
+  // unknown for ORCL"), added by scripts/local/import-positions.mjs. Dismissed
+  // rows are kept so re-importing the same file doesn't bring them back.
+  `CREATE TABLE IF NOT EXISTS dashboard_warnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    dismissed_at TEXT
+  )`,
   // What each bill actually came to in a given month (one entry per bill per month).
   `CREATE TABLE IF NOT EXISTS bill_payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

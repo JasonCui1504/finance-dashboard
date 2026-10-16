@@ -170,6 +170,14 @@ function rowToSnapshot(r: Row): Snapshot {
   };
 }
 
+export type DashboardWarning = { id: number; text: string };
+
+export async function listDashboardWarnings(): Promise<DashboardWarning[]> {
+  const db = await getDb();
+  const rs = await db.execute("SELECT id, text FROM dashboard_warnings WHERE dismissed_at IS NULL ORDER BY id");
+  return rs.rows.map((r) => ({ id: num(r.id), text: String(r.text) }));
+}
+
 export async function listAccounts(): Promise<Account[]> {
   const db = await getDb();
   const rs = await db.execute("SELECT * FROM accounts ORDER BY type, name");

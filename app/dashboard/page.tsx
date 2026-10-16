@@ -29,6 +29,7 @@ import {
   listBudgets,
   listCds,
   listCreditCards,
+  listDashboardWarnings,
   listHoldings,
   listIncomeStreams,
   monthlyEquivalent,
@@ -51,6 +52,7 @@ import CdLadder from "./components/CdLadder";
 import ProjectionCard from "./components/ProjectionCard";
 import SpendingMonthCard from "./components/SpendingMonthCard";
 import StatTile from "./components/StatTile";
+import WarningBanner from "./components/WarningBanner";
 import { DELTA_DOWN, DELTA_UP, fmtDate, fmtPct, fmtUSD, SERIES } from "./components/format";
 
 export const metadata = { title: "Dashboard" };
@@ -155,6 +157,7 @@ export default async function DashboardPage() {
     cardMonths,
     industries,
     dailySpending,
+    warnings,
   ] = await Promise.all([
     getLatestSnapshot(),
     getSnapshotHistory(),
@@ -179,6 +182,7 @@ export default async function DashboardPage() {
     getCardSpendByMonth(),
     getTickerIndustries(),
     getDailySpending(heatmapFrom),
+    listDashboardWarnings(),
   ]);
 
   // Net-worth categories the user has chosen to show. Everything net-worth
@@ -424,6 +428,8 @@ export default async function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-5">
+      <WarningBanner warnings={warnings} />
+
       {showBankReminder && (
         <Link
           href="/dashboard/manage"

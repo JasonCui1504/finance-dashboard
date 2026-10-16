@@ -103,7 +103,10 @@ retirement account or "Robinhood Biotech" brokerage account. The format is
 described at the top of the script. Run it without `--apply` first to
 preview; `--apply` backs the database up to `~/finance-backups/`, replaces the
 listed accounts' positions (so a newer file syncs instead of duplicating),
-and refreshes prices. Run `install.sh` before the first import.
+and refreshes prices. Run `install.sh` before the first import. A
+`warnings` list in the file pins notes to the top of the dashboard (e.g. a
+missing cost basis); each has a "Remove warning" button, and removed ones stay
+removed if the same file is imported again.
 
 Uninvested cash in an account (Robinhood cash, Fidelity's SPAXX) is a holding
 with the reserved ticker `CASH`: shares are dollars, it's always valued at $1,

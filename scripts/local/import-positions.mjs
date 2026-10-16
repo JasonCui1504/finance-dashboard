@@ -14,6 +14,10 @@
 //           { "ticker": "AAPL", "shares": 1, "cost_basis": 321.14, "price": 342.00 },
 //           { "ticker": "CASH", "shares": 722.07 } ] } ] }
 //
+// An optional top-level "warnings": ["..."] list is pinned to the top of the
+// dashboard (each with a "Remove warning" button); ones already added, or
+// already removed, are skipped.
+//
 // cost_basis is the position's total cost (null when unknown); price is the
 // statement price, kept as the manual price only for tickers the price feed
 // can't quote. CASH is uninvested cash: shares are dollars.
@@ -60,6 +64,11 @@ try {
   fail(`Couldn't read ${file} as JSON: ${e.message}`);
 }
 if (!Array.isArray(data.accounts) || data.accounts.length === 0) fail("The file lists no accounts.");
+
+const warnings = data.warnings ?? [];
+if (!Array.isArray(warnings) || warnings.some((w) => typeof w !== "string" || !w.trim())) {
+  fail('"warnings" must be a list of non-empty strings.');
+}
 
 const seenNames = new Set();
 for (const a of data.accounts) {
@@ -147,6 +156,11 @@ if (lookalikes.length) {
   console.log(`    If one is, delete it under Manage → Accounts after importing.`);
 }
 
+if (warnings.length) {
+  console.log(`\n  Dashboard warnings to pin:`);
+  for (const w of warnings) console.log(`      ⚠ ${w}`);
+}
+
 if (!apply) {
   console.log(`\nPreview only — nothing changed. Run again with --apply to import.\n`);
   process.exit(0);
@@ -164,7 +178,10 @@ if (!existsSync(build) || statSync(build).mtimeMs < statSync(join(ROOT, "lib/fin
 const backupDir = join(homedir(), "finance-backups");
 mkdirSync(backupDir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
-const backup = join(backupDir, `finance-before-import-${stamp}.db`);
+let backup = join(backupDir, `finance-before-import-${stamp}.db`);
+for (let n = 2; existsSync(backup); n++) {
+  backup = join(backupDir, `finance-before-import-${stamp}-${n}.db`);
+}
 await db.execute({ sql: "VACUUM INTO ?", args: [backup] });
 console.log(`\nBacked up the database to ${backup}`);
 
@@ -198,6 +215,19 @@ try {
   }
   for (const h of loose) {
     await tx.execute({ sql: "DELETE FROM holdings WHERE id = ?", args: [h.id] });
+  }
+  // Same table as lib/finance/db.ts, which may not have run since install.
+  await tx.execute(`CREATE TABLE IF NOT EXISTS dashboard_warnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    dismissed_at TEXT
+  )`);
+  for (const w of warnings) {
+    await tx.execute({
+      sql: "INSERT OR IGNORE INTO dashboard_warnings (text) VALUES (?)",
+      args: [w.trim()],
+    });
   }
   await tx.commit();
 } catch (e) {
