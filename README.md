@@ -95,6 +95,22 @@ for `~/.finance-ollama/bin/ollama` (the path stays the same across updates). To 
 The model is an 8B model: good at describing patterns, unreliable at maths, so
 the summary carries precomputed totals and the prompt tells it to quote them.
 
+### Importing brokerage positions
+
+`scripts/local/import-positions.mjs` loads positions (shares and total cost
+basis) from a JSON file into named accounts, e.g. a "Fidelity Roth IRA"
+retirement account or "Robinhood Biotech" brokerage account. The format is
+described at the top of the script. Run it without `--apply` first to
+preview; `--apply` backs the database up to `~/finance-backups/`, replaces the
+listed accounts' positions (so a newer file syncs instead of duplicating),
+and refreshes prices. Run `install.sh` before the first import.
+
+Uninvested cash in an account (Robinhood cash, Fidelity's SPAXX) is a holding
+with the reserved ticker `CASH`: shares are dollars, it's always valued at $1,
+and it's never sent to the price API. Everything stays editable under
+Manage → Holdings / Retirement: a partial sale is an edit (fewer shares, lower
+cost basis, more `CASH`), selling out is "remove".
+
 `scripts/local/pull-from-turso.mjs` was the one-off copy from the old Turso
 database. The sections below describe the previous hosted setup.
 

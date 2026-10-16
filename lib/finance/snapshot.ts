@@ -1,5 +1,5 @@
 import { getDb } from "./db";
-import { fetchIndustry, fetchQuotes } from "./prices";
+import { CASH_TICKER, fetchIndustry, fetchQuotes } from "./prices";
 import {
   cdCurrentValue,
   getLatestPrices,
@@ -153,7 +153,12 @@ export async function runDailySnapshot(): Promise<SnapshotResult> {
 
   // 1. Stock prices for manually-entered holdings.
   const holdings = await listHoldings();
-  const tickers = [...new Set(holdings.map((h) => h.ticker.toUpperCase()))];
+  const tickers = [...new Set(holdings.map((h) => h.ticker.toUpperCase()))].filter(
+    (t) => t !== CASH_TICKER
+  );
+  // Cash is priced at its $1 manual price; drop any quote for the real CASH
+  // symbol cached before it became reserved, which would otherwise win.
+  await db.execute({ sql: "DELETE FROM latest_prices WHERE ticker = ?", args: [CASH_TICKER] });
   if (tickers.length > 0) {
     const { quotes, errors } = await fetchQuotes(tickers);
     warnings.push(...errors);

@@ -6,6 +6,13 @@
 
 export type Quote = { ticker: string; price: number; prevClose: number | null };
 
+/**
+ * Reserved ticker for an account's uninvested cash (Robinhood cash, Fidelity
+ * SPAXX). Its "shares" are dollars at a fixed $1 manual price, and it is never
+ * sent to the price API — the real NASDAQ symbol CASH would misprice it.
+ */
+export const CASH_TICKER = "CASH";
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function fetchAlphaVantage(ticker: string): Promise<Quote> {

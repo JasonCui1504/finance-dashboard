@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { fmtUSD } from "../components/format";
 import { CATEGORIES } from "../../../lib/finance/categories";
 import { summarizeTax } from "../../../lib/finance/tax";
+import { CASH_TICKER } from "../../../lib/finance/prices";
 import StatementImport from "./StatementImport";
 import HoldingsImport from "./HoldingsImport";
 
@@ -522,6 +523,152 @@ function AccountsTab({ note, touch }: TabProps) {
 
 // ---------- Holdings ----------
 
+type HoldingEdit = Record<
+  "ticker" | "shares" | "cost_basis" | "manual_price" | "broker" | "account_id",
+  string
+>;
+
+function holdingEditFrom(h: Holding): HoldingEdit {
+  return {
+    ticker: h.ticker,
+    shares: String(h.shares),
+    cost_basis: h.cost_basis == null ? "" : String(h.cost_basis),
+    manual_price: h.manual_price == null ? "" : String(h.manual_price),
+    broker: h.broker ?? "",
+    account_id: h.account_id == null ? "" : String(h.account_id),
+  };
+}
+
+/** "3 shares · cost $107.40" — cash shows as a dollar amount instead. */
+function holdingSummary(h: Holding): string {
+  if (h.ticker === CASH_TICKER) return `${fmtUSD(h.shares)} cash`;
+  return (
+    `${h.shares} shares` +
+    (h.cost_basis != null ? ` · cost ${fmtUSD(h.cost_basis)}` : "") +
+    (h.manual_price != null ? ` · manual ${fmtUSD(h.manual_price)}` : "")
+  );
+}
+
+/**
+ * Inline editor for one holding, shared by the Holdings and Retirement tabs:
+ * every field, including which account it sits in. A partial sale is an edit
+ * (fewer shares, lower cost basis); selling everything is "remove".
+ */
+function HoldingEditRow({
+  holding,
+  accounts,
+  onDone,
+  onError,
+}: {
+  holding: Holding;
+  accounts: Account[];
+  onDone: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [edit, setEdit] = useState(() => holdingEditFrom(holding));
+  const isCash = edit.ticker === CASH_TICKER;
+
+  async function save() {
+    try {
+      await api(`/api/finance/holdings/${holding.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          ticker: edit.ticker,
+          shares: edit.shares === "" ? null : Number(edit.shares),
+          cost_basis: edit.cost_basis === "" ? null : Number(edit.cost_basis),
+          manual_price: edit.manual_price === "" ? null : Number(edit.manual_price),
+          broker: edit.broker.trim() || null,
+          account_id: edit.account_id === "" ? null : Number(edit.account_id),
+        }),
+      });
+      onDone();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Failed");
+    }
+  }
+
+  return (
+    <li className="border-t border-line bg-lift/30 p-3">
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label="Ticker">
+          <input
+            required
+            value={edit.ticker}
+            onChange={(e) => setEdit({ ...edit, ticker: e.target.value.toUpperCase() })}
+            className={`${inputCls} w-24`}
+          />
+        </Field>
+        <Field label={isCash ? "Amount ($)" : "Shares"}>
+          <input
+            type="number"
+            step="any"
+            min="0"
+            value={edit.shares}
+            onChange={(e) => setEdit({ ...edit, shares: e.target.value })}
+            className={`${inputCls} w-28`}
+          />
+        </Field>
+        {!isCash && (
+          <>
+            <Field label="Cost basis (total $)">
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="optional"
+                value={edit.cost_basis}
+                onChange={(e) => setEdit({ ...edit, cost_basis: e.target.value })}
+                className={`${inputCls} w-32`}
+              />
+            </Field>
+            <Field label="Manual price">
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="if no live quote"
+                value={edit.manual_price}
+                onChange={(e) => setEdit({ ...edit, manual_price: e.target.value })}
+                className={`${inputCls} w-32`}
+              />
+            </Field>
+          </>
+        )}
+        <Field label="Account">
+          <select
+            value={edit.account_id}
+            onChange={(e) => setEdit({ ...edit, account_id: e.target.value })}
+            className={inputCls}
+          >
+            <option value="">None (loose holding)</option>
+            {accounts
+              .filter((a) => a.type === "brokerage" || a.type === "retirement")
+              .map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+          </select>
+        </Field>
+        <Field label="Broker">
+          <input
+            placeholder="e.g. Schwab"
+            value={edit.broker}
+            onChange={(e) => setEdit({ ...edit, broker: e.target.value })}
+            className={`${inputCls} w-28`}
+          />
+        </Field>
+        <button onClick={save} className={btnCls} type="button">
+          Save
+        </button>
+        <button onClick={onDone} className={ghostBtnCls} type="button">
+          Cancel
+        </button>
+      </div>
+    </li>
+  );
+}
+
 function HoldingsTab({ note, touch }: TabProps) {
   const { items: allHoldings, loaded, reload } = useList<Holding>("/api/finance/holdings");
   const { items: accounts } = useList<Account>("/api/finance/accounts");
@@ -533,13 +680,17 @@ function HoldingsTab({ note, touch }: TabProps) {
   const items = allHoldings.filter(
     (h) => h.account_id == null || !retirementIds.has(h.account_id)
   );
-  const [form, setForm] = useState({ ticker: "", shares: "", manual_price: "", broker: "" });
+  const emptyForm = { ticker: "", shares: "", cost_basis: "", manual_price: "", broker: "" };
+  const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [edit, setEdit] = useState({ shares: "", manual_price: "", broker: "" });
   const [sortBy, setSortBy] = useState<"broker" | "ticker">("broker");
   const [brokerFilter, setBrokerFilter] = useState("");
 
-  const brokerOf = (h: Holding) => h.broker?.trim() || "No broker";
+  // Group by the account a holding sits in (e.g. "Robinhood Biotech"), else
+  // by its broker label.
+  const accountName = new Map(accounts.map((a) => [a.id, a.name]));
+  const brokerOf = (h: Holding) =>
+    (h.account_id != null && accountName.get(h.account_id)) || h.broker?.trim() || "No broker";
   const brokers = [...new Set(items.map(brokerOf))].sort((a, b) =>
     a === "No broker" ? 1 : b === "No broker" ? -1 : a.localeCompare(b)
   );
@@ -562,11 +713,12 @@ function HoldingsTab({ note, touch }: TabProps) {
         body: JSON.stringify({
           ticker: form.ticker,
           shares: Number(form.shares),
+          cost_basis: form.cost_basis === "" ? null : Number(form.cost_basis),
           manual_price: form.manual_price === "" ? null : Number(form.manual_price),
           broker: form.broker.trim() || null,
         }),
       });
-      setForm({ ticker: "", shares: "", manual_price: "", broker: "" });
+      setForm(emptyForm);
       reload();
       touch();
     } catch (err) {
@@ -574,104 +726,43 @@ function HoldingsTab({ note, touch }: TabProps) {
     }
   }
 
-  async function saveEdit(id: number) {
-    try {
-      await api(`/api/finance/holdings/${id}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          shares: edit.shares === "" ? null : Number(edit.shares),
-          manual_price: edit.manual_price === "" ? null : Number(edit.manual_price),
-          broker: edit.broker.trim() || null,
-        }),
-      });
-      setEditingId(null);
-      reload();
-      touch();
-    } catch (err) {
-      note("err", err instanceof Error ? err.message : "Failed");
-    }
-  }
-
-  async function remove(id: number) {
-    if (!confirm("Delete this holding?")) return;
-    await api(`/api/finance/holdings/${id}`, { method: "DELETE" });
+  async function remove(h: Holding) {
+    if (!confirm(`Remove ${h.ticker}? Use this when you've sold all of it.`)) return;
+    await api(`/api/finance/holdings/${h.id}`, { method: "DELETE" });
     reload();
     touch();
   }
 
   const renderHolding = (h: Holding) =>
-            editingId === h.id ? (
-              <li key={h.id} className="border-t border-line bg-lift/30 p-3">
-                <div className="flex flex-wrap items-end gap-2">
-                  <span className="pb-1.5 text-sm text-prose">{h.ticker}</span>
-                  <Field label="Shares">
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={edit.shares}
-                      onChange={(e) => setEdit({ ...edit, shares: e.target.value })}
-                      className={`${inputCls} w-28`}
-                    />
-                  </Field>
-                  <Field label="Broker">
-                    <input
-                      placeholder="e.g. Schwab"
-                      value={edit.broker}
-                      onChange={(e) => setEdit({ ...edit, broker: e.target.value })}
-                      className={`${inputCls} w-32`}
-                    />
-                  </Field>
-                  <Field label="Manual price">
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      placeholder="if no live quote"
-                      value={edit.manual_price}
-                      onChange={(e) => setEdit({ ...edit, manual_price: e.target.value })}
-                      className={`${inputCls} w-40`}
-                    />
-                  </Field>
-                  <button onClick={() => saveEdit(h.id)} className={btnCls} type="button">
-                    Save
-                  </button>
-                  <button onClick={() => setEditingId(null)} className={ghostBtnCls} type="button">
-                    Cancel
-                  </button>
-                </div>
-              </li>
-            ) : (
-              <Row key={h.id}>
-                <span className="text-prose">{h.ticker}</span>
-                <span className="text-xs text-faint">
-                  {h.shares} shares
-                  {/* The group heading names the broker when grouped. */}
-                  {h.broker && sortBy === "ticker" ? ` · ${h.broker}` : ""}
-                  {h.manual_price != null
-                    ? ` · manual ${fmtUSD(h.manual_price)}`
-                    : ""}
-                </span>
-                <span className="ml-auto" />
-                <button
-                  onClick={() => {
-                    setEditingId(h.id);
-                    setEdit({
-                      shares: String(h.shares),
-                      manual_price: h.manual_price == null ? "" : String(h.manual_price),
-                      broker: h.broker ?? "",
-                    });
-                  }}
-                  className={linkBtnCls}
-                >
-                  edit
-                </button>
-                <button onClick={() => remove(h.id)} className={delBtnCls}>
-                  delete
-                </button>
-              </Row>
-            )
-          ;
+    editingId === h.id ? (
+      <HoldingEditRow
+        key={h.id}
+        holding={h}
+        accounts={accounts}
+        onDone={() => {
+          setEditingId(null);
+          reload();
+          touch();
+        }}
+        onError={(msg) => note("err", msg)}
+      />
+    ) : (
+      <Row key={h.id}>
+        <span className="text-prose">{h.ticker}</span>
+        <span className="text-xs text-faint">
+          {holdingSummary(h)}
+          {/* The group heading names the broker when grouped. */}
+          {h.broker && sortBy === "ticker" ? ` · ${h.broker}` : ""}
+        </span>
+        <span className="ml-auto" />
+        <button onClick={() => setEditingId(h.id)} className={linkBtnCls}>
+          edit
+        </button>
+        <button onClick={() => remove(h)} className={delBtnCls}>
+          remove
+        </button>
+      </Row>
+    );
 
   return (
     <div className="flex flex-col gap-6">
@@ -695,6 +786,17 @@ function HoldingsTab({ note, touch }: TabProps) {
               value={form.shares}
               onChange={(e) => setForm({ ...form, shares: e.target.value })}
               className={`${inputCls} w-28`}
+            />
+          </Field>
+          <Field label="Cost basis (total $)">
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              placeholder="optional"
+              value={form.cost_basis}
+              onChange={(e) => setForm({ ...form, cost_basis: e.target.value })}
+              className={`${inputCls} w-32`}
             />
           </Field>
           <Field label="Broker">
@@ -730,7 +832,7 @@ function HoldingsTab({ note, touch }: TabProps) {
             <label className="flex items-center gap-1.5">
               Show
               <select value={brokerFilter} onChange={(e) => setBrokerFilter(e.target.value)} className={`${inputCls} py-1 text-xs`}>
-                <option value="">All brokers</option>
+                <option value="">All accounts</option>
                 {brokers.map((b) => (
                   <option key={b} value={b}>
                     {b}
@@ -794,8 +896,10 @@ function RetirementTab({ note, touch }: TabProps) {
     account_id: "",
     ticker: "",
     shares: "",
+    cost_basis: "",
     manual_price: "",
   });
+  const [editingId, setEditingId] = useState<number | null>(null);
 
   const retirement = accounts.filter((a) => a.type === "retirement");
 
@@ -808,10 +912,11 @@ function RetirementTab({ note, touch }: TabProps) {
           account_id: Number(form.account_id),
           ticker: form.ticker,
           shares: Number(form.shares),
+          cost_basis: form.cost_basis === "" ? null : Number(form.cost_basis),
           manual_price: form.manual_price === "" ? null : Number(form.manual_price),
         }),
       });
-      setForm({ ...form, ticker: "", shares: "", manual_price: "" });
+      setForm({ ...form, ticker: "", shares: "", cost_basis: "", manual_price: "" });
       reload();
       touch();
     } catch (err) {
@@ -819,9 +924,9 @@ function RetirementTab({ note, touch }: TabProps) {
     }
   }
 
-  async function remove(id: number) {
-    if (!confirm("Delete this position?")) return;
-    await api(`/api/finance/holdings/${id}`, { method: "DELETE" });
+  async function remove(h: Holding) {
+    if (!confirm(`Remove ${h.ticker}? Use this when you've sold all of it.`)) return;
+    await api(`/api/finance/holdings/${h.id}`, { method: "DELETE" });
     reload();
     touch();
   }
@@ -875,6 +980,17 @@ function RetirementTab({ note, touch }: TabProps) {
               className={`${inputCls} w-28`}
             />
           </Field>
+          <Field label="Cost basis (total $)">
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              placeholder="optional"
+              value={form.cost_basis}
+              onChange={(e) => setForm({ ...form, cost_basis: e.target.value })}
+              className={`${inputCls} w-32`}
+            />
+          </Field>
           <Field label="Manual price (if no live quote)">
             <input
               type="number"
@@ -918,19 +1034,33 @@ function RetirementTab({ note, touch }: TabProps) {
               </span>
             </div>
             <ul>
-              {positions.map((h) => (
-                <Row key={h.id}>
-                  <span className="text-prose">{h.ticker}</span>
-                  <span className="text-xs text-faint">
-                    {h.shares} shares
-                    {h.manual_price != null ? ` · manual ${fmtUSD(h.manual_price)}` : ""}
-                  </span>
-                  <span className="ml-auto" />
-                  <button onClick={() => remove(h.id)} className={delBtnCls}>
-                    delete
-                  </button>
-                </Row>
-              ))}
+              {positions.map((h) =>
+                editingId === h.id ? (
+                  <HoldingEditRow
+                    key={h.id}
+                    holding={h}
+                    accounts={accounts}
+                    onDone={() => {
+                      setEditingId(null);
+                      reload();
+                      touch();
+                    }}
+                    onError={(msg) => note("err", msg)}
+                  />
+                ) : (
+                  <Row key={h.id}>
+                    <span className="text-prose">{h.ticker}</span>
+                    <span className="text-xs text-faint">{holdingSummary(h)}</span>
+                    <span className="ml-auto" />
+                    <button onClick={() => setEditingId(h.id)} className={linkBtnCls}>
+                      edit
+                    </button>
+                    <button onClick={() => remove(h)} className={delBtnCls}>
+                      remove
+                    </button>
+                  </Row>
+                )
+              )}
               {positions.length === 0 && (
                 <p className="py-3 text-sm text-faint">
                   No positions yet — this account still counts its manual balance.
@@ -944,7 +1074,9 @@ function RetirementTab({ note, touch }: TabProps) {
       <p className="text-xs text-faint">
         Positions are priced from the same live quotes as your brokerage
         holdings, and refresh on the nightly run. An account with positions is
-        valued from them, so its manual balance is ignored rather than added.
+        valued from them, so its manual balance is ignored rather than added —
+        add its uninvested cash (e.g. SPAXX) as ticker {CASH_TICKER} with the
+        dollar amount as shares.
       </p>
     </div>
   );

@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { badRequest, requireSession } from "../../../../lib/finance/api";
 import { getDb } from "../../../../lib/finance/db";
+import { CASH_TICKER } from "../../../../lib/finance/prices";
 import { listHoldings } from "../../../../lib/finance/queries";
 import { recomputeSnapshot } from "../../../../lib/finance/snapshot";
 
@@ -13,7 +14,8 @@ export async function GET(request: NextRequest) {
 const TICKER_RE = /^[A-Z0-9.\-]{1,10}$/;
 
 // Accepts a single holding (ticker, shares) or a bulk paste-import
-// ({ holdings: [{ ticker, shares }, ...] }). Cost basis is no longer tracked.
+// ({ holdings: [{ ticker, shares }, ...] }). cost_basis is the position's
+// total cost in dollars, not per share.
 export async function POST(request: NextRequest) {
   const unauthorized = requireSession(request);
   if (unauthorized) return unauthorized;
@@ -26,6 +28,7 @@ export async function POST(request: NextRequest) {
   const rows: {
     ticker: string;
     shares: number;
+    costBasis: number | null;
     manualPrice: number | null;
     broker: string | null;
     accountId: number | null;
@@ -38,10 +41,20 @@ export async function POST(request: NextRequest) {
     if (!Number.isFinite(shares) || shares <= 0) {
       return badRequest(`shares must be > 0 for ${ticker}`);
     }
+    // Cash is always valued at $1 a share (its shares are dollars).
     const manualPrice =
-      h.manual_price == null || h.manual_price === "" ? null : Number(h.manual_price);
+      ticker === CASH_TICKER
+        ? 1
+        : h.manual_price == null || h.manual_price === ""
+          ? null
+          : Number(h.manual_price);
     if (manualPrice != null && (!Number.isFinite(manualPrice) || manualPrice < 0)) {
       return badRequest(`Invalid manual price for ${ticker}`);
+    }
+    const costBasis =
+      h.cost_basis == null || h.cost_basis === "" ? null : Number(h.cost_basis);
+    if (costBasis != null && (!Number.isFinite(costBasis) || costBasis < 0)) {
+      return badRequest(`Invalid cost basis for ${ticker}`);
     }
     const broker =
       typeof h.broker === "string" && h.broker.trim() ? h.broker.trim().slice(0, 40) : null;
@@ -52,15 +65,15 @@ export async function POST(request: NextRequest) {
     if (accountId != null && (!Number.isInteger(accountId) || accountId <= 0)) {
       return badRequest(`Invalid account for ${ticker}`);
     }
-    rows.push({ ticker, shares, manualPrice, broker, accountId });
+    rows.push({ ticker, shares, costBasis, manualPrice, broker, accountId });
   }
 
   const db = await getDb();
   await db.batch(
     rows.map((r) => ({
       sql: `INSERT INTO holdings (account_id, ticker, shares, cost_basis, purchase_date, manual_price, broker)
-            VALUES (?, ?, ?, NULL, NULL, ?, ?)`,
-      args: [r.accountId, r.ticker, r.shares, r.manualPrice, r.broker],
+            VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+      args: [r.accountId, r.ticker, r.shares, r.costBasis, r.manualPrice, r.broker],
     })),
     "write"
   );
