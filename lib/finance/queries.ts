@@ -731,6 +731,27 @@ export async function getCategorySpendForMonth(
     .sort((a, b) => b.total - a.total);
 }
 
+/** A monthly limit named by its category, or its group for a group budget. */
+export type Budget = { id: number; category: string; monthly_limit: number };
+
+/**
+ * Budgets in the original { category, monthly_limit } shape, for code written
+ * against it. A group budget is named by the group ("Fixed").
+ */
+export async function listBudgets(): Promise<Budget[]> {
+  const db = await getDb();
+  const rs = await db.execute(
+    `SELECT b.id, COALESCE(c.name, g.name) AS name, b.monthly_limit
+     FROM spending_budgets b
+     LEFT JOIN spending_categories c ON c.id = b.category_id
+     LEFT JOIN spending_groups g ON g.id = b.group_id
+     ORDER BY name`
+  );
+  return rs.rows
+    .filter((r) => r.name != null)
+    .map((r) => ({ id: num(r.id), category: String(r.name), monthly_limit: num(r.monthly_limit) }));
+}
+
 /** Monthly-equivalent amount for recurring income; null for one-off/irregular. */
 export function monthlyEquivalent(income: IncomeStream): number | null {
   const f = monthlyFactor(income.frequency);
