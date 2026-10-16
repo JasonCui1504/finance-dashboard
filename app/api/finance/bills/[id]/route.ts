@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { badRequest, parseId, requireSession } from "../../../../../lib/finance/api";
 import { getDb } from "../../../../../lib/finance/db";
+import { resolveCategoryId } from "../../../../../lib/finance/taxonomy";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -22,6 +23,11 @@ export async function PUT(request: NextRequest, ctx: Ctx) {
   }
 
   const db = await getDb();
+  if ("category_id" in b) {
+    const cat = await resolveCategoryId(b.category_id);
+    if (cat === "invalid") return badRequest("Unknown category");
+    await db.execute({ sql: "UPDATE bills SET category_id = ? WHERE id = ?", args: [cat, id] });
+  }
   await db.execute({
     sql: `UPDATE bills SET
             name = COALESCE(?, name),

@@ -87,7 +87,8 @@ export default function SpendingRangeChart({
   const slot = plotW / buckets.length;
   const gap = Math.min(2, slot * 0.25);
   const barW = Math.max(1, Math.min(40, slot - gap));
-  const ticks = [top, top / 2, 0, ...(bottom > 0 ? [-bottom] : [])];
+  // The returns tick only when there's room below the baseline for its label.
+  const ticks = [top, top / 2, 0, ...(bottom > 0 && y(-bottom) - zero >= 14 ? [-bottom] : [])];
   // About six date labels, whatever the bucket count.
   const labelEvery = Math.max(1, Math.ceil(buckets.length / 6));
   const transition = instant

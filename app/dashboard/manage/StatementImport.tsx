@@ -2,22 +2,25 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  CATEGORIES,
-  categorize,
+  categorizeSlug,
+  issuerSlug,
   matchMerchantRule,
-  normalizeIssuerCategory,
-  type Category,
 } from "../../../lib/finance/categories";
+import CategorySelect, { useTaxonomy } from "./CategorySelect";
 import { fmtUSD } from "../components/format";
 
 type CreditCard = { id: number; name: string; issuer: string };
-type MerchantRule = { id: number; match_key: string; category: string };
+type MerchantRule = { id: number; match_key: string; category_id: number | null };
 
 type PreviewRow = {
   date: string;
   description: string;
   amount: number; // positive = spend
-  category: Category;
+  category_id: number | null;
+  /** The statement's own category column, kept for later re-sorts. */
+  issuer: string | null;
+  /** Changed in the preview: saved as yours and taught as a merchant rule. */
+  byHand: boolean;
   include: boolean;
 };
 
@@ -170,6 +173,11 @@ export default function StatementImport({
   const [chargesPositive, setChargesPositive] = useState(false);
   const [hasAmountSignChoice, setHasAmountSignChoice] = useState(false);
   const [merchantRules, setMerchantRules] = useState<MerchantRule[]>([]);
+  const { taxonomy } = useTaxonomy();
+  // Built-in categories by slug, which the keyword and issuer rules name.
+  const idBySlug = new Map(
+    taxonomy.categories.filter((c) => c.slug).map((c) => [c.slug!, c.id])
+  );
   const [rawParsed, setRawParsed] = useState<
     {
       date: string;
@@ -197,7 +205,8 @@ export default function StatementImport({
       (
         raw: typeof rawParsed,
         chargesArePositive: boolean,
-        rules: MerchantRule[]
+        rules: MerchantRule[],
+        idBySlug: Map<string, number>
       ): PreviewRow[] => {
         const out: PreviewRow[] = [];
         for (const r of raw) {
@@ -244,15 +253,19 @@ export default function StatementImport({
           // A rule you taught by recategorizing beats both the issuer's own
           // label and the built-in keywords — it is an explicit choice.
           const learned = matchMerchantRule(r.description, rules);
-          const category: Category =
-            (learned?.category as Category | undefined) ??
-            (r.issuerCat ? normalizeIssuerCategory(r.issuerCat) : null) ??
-            categorize(r.description);
+          const slug = issuerSlug(r.issuerCat) ?? categorizeSlug(r.description);
+          const category_id = learned
+            ? learned.category_id
+            : slug
+              ? (idBySlug.get(slug) ?? null)
+              : null;
           out.push({
             date: r.date,
             description: cleanDescription(r.description),
             amount,
-            category,
+            category_id,
+            issuer: r.issuerCat,
+            byHand: false,
             include: true,
           });
         }
@@ -346,7 +359,7 @@ export default function StatementImport({
         setHasAmountSignChoice(usesAmountSign);
         setChargesPositive(detectedPositive);
         setRawParsed(raw);
-        setRows(buildRows(raw, detectedPositive, merchantRules));
+        setRows(buildRows(raw, detectedPositive, merchantRules, idBySlug));
       } catch {
         onError("Failed to parse that file. Is it a CSV export?");
       }
@@ -356,12 +369,12 @@ export default function StatementImport({
 
   function flipSign(nextPositive: boolean) {
     setChargesPositive(nextPositive);
-    setRows(buildRows(rawParsed, nextPositive, merchantRules));
+    setRows(buildRows(rawParsed, nextPositive, merchantRules, idBySlug));
   }
 
-  function setRowCategory(idx: number, category: Category) {
+  function setRowCategory(idx: number, category_id: number | null) {
     setRows((prev) =>
-      prev ? prev.map((r, i) => (i === idx ? { ...r, category } : r)) : prev
+      prev ? prev.map((r, i) => (i === idx ? { ...r, category_id, byHand: true } : r)) : prev
     );
   }
 
@@ -400,7 +413,9 @@ export default function StatementImport({
             date: r.date,
             description: r.description,
             amount: r.amount,
-            category: r.category,
+            category_id: r.category_id,
+            issuer_category: r.issuer,
+            by_hand: r.byHand,
           })),
         }),
       });
@@ -508,17 +523,13 @@ export default function StatementImport({
                       {fmtUSD(r.amount)}
                     </td>
                     <td className="p-2">
-                      <select
-                        value={r.category}
-                        onChange={(e) => setRowCategory(i, e.target.value as Category)}
+                      <CategorySelect
+                        value={r.category_id}
+                        onChange={(id) => setRowCategory(i, id)}
+                        taxonomy={taxonomy}
+                        ariaLabel={`Category for ${r.description}`}
                         className="rounded border border-line bg-canvas px-1.5 py-1 text-xs text-prose outline-none focus:border-accent"
-                      >
-                        {CATEGORIES.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     </td>
                   </tr>
                 ))}

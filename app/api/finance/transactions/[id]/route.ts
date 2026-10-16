@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { badRequest, parseId, requireSession } from "../../../../../lib/finance/api";
 import { getDb } from "../../../../../lib/finance/db";
-import { isCategory, merchantKey } from "../../../../../lib/finance/categories";
+import { merchantKey } from "../../../../../lib/finance/categories";
+import { categoryLabel, resolveCategoryId } from "../../../../../lib/finance/taxonomy";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -46,12 +47,14 @@ export async function PUT(request: NextRequest, ctx: Ctx) {
     return Response.json({ ok: true });
   }
 
-  if (typeof b.category !== "string" || !isCategory(b.category)) {
-    return badRequest("Invalid category");
-  }
+  if (!("category_id" in b)) return badRequest("Nothing to update");
+  const categoryId = await resolveCategoryId(b.category_id);
+  if (categoryId === "invalid") return badRequest("Unknown category");
+  const label = await categoryLabel(categoryId);
+  // Picked by hand, so no later re-sort moves it.
   await db.execute({
-    sql: "UPDATE transactions SET category = ? WHERE id = ?",
-    args: [b.category, id],
+    sql: "UPDATE transactions SET category_id = ?, category = ?, category_source = 'user' WHERE id = ?",
+    args: [categoryId, label, id],
   });
 
   // Recategorizing by hand teaches a rule, so the next import of the same
@@ -63,9 +66,9 @@ export async function PUT(request: NextRequest, ctx: Ctx) {
   const key = merchantKey(String(row.rows[0]?.description ?? ""));
   if (key.length >= 2) {
     await db.execute({
-      sql: `INSERT INTO merchant_rules (match_key, category) VALUES (?, ?)
-            ON CONFLICT (match_key) DO UPDATE SET category = excluded.category`,
-      args: [key, b.category],
+      sql: `INSERT INTO merchant_rules (match_key, category, category_id) VALUES (?, ?, ?)
+            ON CONFLICT (match_key) DO UPDATE SET category = excluded.category, category_id = excluded.category_id`,
+      args: [key, label, categoryId],
     });
   }
   return Response.json({ ok: true, learned: key || null });

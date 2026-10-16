@@ -1,8 +1,10 @@
 import { NextRequest } from "next/server";
 import { badRequest, requireSession } from "../../../../lib/finance/api";
 import { getDb } from "../../../../lib/finance/db";
-import { isCategory } from "../../../../lib/finance/categories";
+import { merchantKey } from "../../../../lib/finance/categories";
 import { listTransactions } from "../../../../lib/finance/queries";
+import { applySubscriptionPass } from "../../../../lib/finance/resort";
+import { getTaxonomy } from "../../../../lib/finance/taxonomy";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -34,27 +36,62 @@ export async function POST(request: NextRequest) {
   });
   if (!card.rows.length) return badRequest("Unknown card");
 
+  const names = new Map((await getTaxonomy()).categories.map((c) => [c.id, c.name]));
   const stmts = [];
+  const taught = new Map<string, number | null>();
   for (const raw of rows) {
     const t = raw as Record<string, unknown>;
     const date = String(t.date ?? "");
     const description = String(t.description ?? "").slice(0, 300);
     const amount = Number(t.amount);
-    const category = isCategory(String(t.category)) ? String(t.category) : "Other";
+    // Unknown or missing ids import as Uncategorized rather than failing the file.
+    const rawId = t.category_id == null || t.category_id === "" ? null : Number(t.category_id);
+    const categoryId = rawId != null && names.has(rawId) ? rawId : null;
+    const issuer =
+      typeof t.issuer_category === "string" && t.issuer_category.trim()
+        ? t.issuer_category.trim().slice(0, 80)
+        : null;
+    const byHand = t.by_hand === true;
     if (!DATE_RE.test(date)) return badRequest(`Bad date: ${date}`);
     if (!Number.isFinite(amount)) return badRequest("Bad amount");
     // Positive = spend, negative = refund/credit (nets against spend). Zero is a
     // no-op. Declined charges and card payments are filtered out before import.
     if (amount === 0) continue;
     stmts.push({
-      sql: `INSERT INTO transactions (card_id, date, description, amount, category)
-            VALUES (?, ?, ?, ?, ?)`,
-      args: [cardId, date, description, amount, category],
+      sql: `INSERT INTO transactions
+              (card_id, date, description, amount, category, category_id, category_source, issuer_category)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        cardId,
+        date,
+        description,
+        amount,
+        categoryId != null ? names.get(categoryId)! : "Uncategorized",
+        categoryId,
+        byHand ? "user" : "auto",
+        issuer,
+      ],
     });
+    // A category you changed in the import preview teaches its merchant,
+    // exactly like recategorizing one later.
+    if (byHand) {
+      const key = merchantKey(description);
+      if (key.length >= 2) taught.set(key, categoryId);
+    }
   }
   if (stmts.length === 0) return badRequest("No spend rows to import");
+  for (const [key, categoryId] of taught) {
+    stmts.push({
+      sql: `INSERT INTO merchant_rules (match_key, category, category_id) VALUES (?, ?, ?)
+            ON CONFLICT (match_key) DO UPDATE SET category = excluded.category, category_id = excluded.category_id`,
+      args: [key, categoryId != null ? names.get(categoryId)! : "Uncategorized", categoryId],
+    });
+  }
+  const imported = stmts.length - taught.size;
   await db.batch(stmts, "write");
-  return Response.json({ ok: true, imported: stmts.length }, { status: 201 });
+  // A merchant's third monthly charge makes it a subscription, past charges included.
+  const subscriptions = await applySubscriptionPass();
+  return Response.json({ ok: true, imported, subscriptions }, { status: 201 });
 }
 
 // Bulk hide/unhide. Hiding only collapses a row out of the Manage list —

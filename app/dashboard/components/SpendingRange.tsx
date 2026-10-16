@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import CategoryBreakdown from "./CategoryBreakdown";
-import CategoryDonut from "./CategoryDonut";
+import CategoryDonut, { OTHER, SLOTS } from "./CategoryDonut";
+import GroupBreakdown, { type BreakdownCategory, type BreakdownGroup } from "./GroupBreakdown";
 import { DELTA_DOWN, DELTA_UP, fmtPct, fmtUSD } from "./format";
 import SpendingRangeChart, {
   FIXED_COLOR,
@@ -14,20 +14,38 @@ import SpendingRangeChart, {
 // The chart's hatch for bills and monthly totals, as a CSS fill.
 const FIXED_FILL = `repeating-linear-gradient(45deg, ${FIXED_COLOR} 0 2px, ${FIXED_COLOR}38 2px 5px)`;
 
-// Mirrors CARD_CREDITS in lib/finance/queries.ts (kept here: this is a client component).
-const CARD_CREDITS = "Card credits";
 const DAYS_PER_MONTH = 365.25 / 12;
 
 type CardRef = { id: number; name: string; issuer: string };
 type BillRef = { id: number; name: string };
-type Day = { date: string; card_id: number; category: string; spent: number; returned: number };
+type Day = {
+  date: string;
+  card_id: number;
+  category_id: number | null;
+  credit: boolean;
+  spent: number;
+  returned: number;
+};
+type MerchantDay = { date: string; name: string; category_id: number | null; amount: number };
 type Monthly = {
   month: string;
   card_id: number | null;
   bill_id: number | null;
-  category: string;
+  category_id: number | null;
   amount: number;
 };
+type Taxonomy = {
+  groups: { id: number; name: string }[];
+  categories: { id: number; group_id: number; name: string }[];
+};
+type Budget = { group_id: number | null; category_id: number | null; monthly_limit: number };
+
+// Category keys within a window: a category id, or one of the buckets that
+// aren't categories — card credits, uncategorized, a card's manual total.
+const CREDITS = "credits";
+const NONE = "none";
+const MANUAL = "manual";
+const catKey = (id: number | null) => (id == null ? NONE : `c${id}`);
 
 type Preset = "30" | "90" | "ytd" | "custom";
 const PRESETS: { key: Preset; label: string }[] = [
@@ -70,6 +88,7 @@ type Totals = {
   returned: number;
   byCard: Map<number, number>;
   byBill: Map<number, number>;
+  /** By catKey (see above), card credits under CREDITS. */
   byCategory: Map<string, number>;
 };
 
@@ -82,7 +101,7 @@ function totalsFor(days: Day[], monthly: Monthly[], from: string, to: string): T
     t.spent += d.spent;
     t.returned += d.returned;
     add(t.byCard, d.card_id, d.spent + d.returned);
-    add(t.byCategory, d.category, d.spent + d.returned);
+    add(t.byCategory, d.credit ? CREDITS : catKey(d.category_id), d.spent + d.returned);
   }
   for (const m of monthly) {
     const first = `${m.month}-01`;
@@ -90,9 +109,32 @@ function totalsFor(days: Day[], monthly: Monthly[], from: string, to: string): T
     t.fixed += m.amount;
     if (m.card_id != null) add(t.byCard, m.card_id, m.amount);
     if (m.bill_id != null) add(t.byBill, m.bill_id, m.amount);
-    add(t.byCategory, m.category, m.amount);
+    add(t.byCategory, m.bill_id != null ? catKey(m.category_id) : MANUAL, m.amount);
   }
   return t;
+}
+
+/** Top merchants per category key in [from, to], biggest first. */
+function merchantsFor(rows: MerchantDay[], from: string, to: string): Map<string, { name: string; total: number }[]> {
+  const sums = new Map<string, Map<string, number>>();
+  for (const r of rows) {
+    if (r.date < from || r.date > to) continue;
+    const k = catKey(r.category_id);
+    const m = sums.get(k) ?? sums.set(k, new Map()).get(k)!;
+    m.set(r.name, (m.get(r.name) ?? 0) + r.amount);
+  }
+  const out = new Map<string, { name: string; total: number }[]>();
+  for (const [k, m] of sums) {
+    out.set(
+      k,
+      [...m.entries()]
+        .map(([name, total]) => ({ name, total }))
+        .filter((x) => Math.abs(x.total) >= 0.005)
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 6)
+    );
+  }
+  return out;
 }
 
 /** Buckets of `size` days ending on `to`, so the newest bar is always whole. */
@@ -139,15 +181,19 @@ export default function SpendingRange({
   cards,
   bills,
   days,
+  merchants,
   monthly,
+  taxonomy,
   budgets,
   today,
 }: {
   cards: CardRef[];
   bills: BillRef[];
   days: Day[];
+  merchants: MerchantDay[];
   monthly: Monthly[];
-  budgets: { category: string; monthly_limit: number }[];
+  taxonomy: Taxonomy;
+  budgets: Budget[];
   today: string;
 }) {
   const [preset, setPreset] = useState<Preset>("30");
@@ -190,25 +236,53 @@ export default function SpendingRange({
   const prevLabel = preset === "ytd" ? "same period last year" : `previous ${len} days`;
   const prevShort = preset === "ytd" ? "last year" : `prior ${len} days`;
 
-  const credits = cur.byCategory.get(CARD_CREDITS) ?? 0;
-  const spend = [...cur.byCategory.entries()]
-    .filter(([c, v]) => c !== CARD_CREDITS && Math.abs(v) >= 0.005)
-    .map(([category, total]) => ({ category, total }))
-    .sort((a, b) => b.total - a.total);
-  const trend = new Map<string, number>();
-  if (comparable) {
-    for (const { category, total } of spend) {
-      const before = prev.byCategory.get(category) ?? 0;
-      if (before <= 0 || total <= 0) continue;
-      const pct = ((total - before) / before) * 100;
-      if (Math.abs(pct) >= 1) trend.set(category, pct);
-    }
-  }
+  const credits = cur.byCategory.get(CREDITS) ?? 0;
   // Monthly budgets scaled to the window's length.
-  const scaledBudgets = budgets.map((b) => ({
-    category: b.category,
-    monthly_limit: Math.round(((b.monthly_limit * len) / DAYS_PER_MONTH) * 100) / 100,
-  }));
+  const scale = (limit: number) => Math.round(((limit * len) / DAYS_PER_MONTH) * 100) / 100;
+  const groupBudget = new Map(budgets.filter((b) => b.group_id != null).map((b) => [b.group_id!, scale(b.monthly_limit)]));
+  const catBudget = new Map(
+    budgets.filter((b) => b.category_id != null).map((b) => [b.category_id!, scale(b.monthly_limit)])
+  );
+  const tops = merchantsFor(merchants, from, to);
+  const row = (key: string, name: string, budget: number | null): BreakdownCategory => ({
+    key,
+    name,
+    total: cur.byCategory.get(key) ?? 0,
+    prev: comparable ? (prev.byCategory.get(key) ?? 0) : null,
+    budget,
+    merchants: tops.get(key) ?? [],
+  });
+  const sum = (rows: BreakdownCategory[], f: (r: BreakdownCategory) => number | null) =>
+    rows.some((r) => f(r) == null) ? null : rows.reduce((s, r) => s + (f(r) ?? 0), 0);
+  // Groups keep their colour by position (Fixed is always the first slot),
+  // so a colour means the same group in every window.
+  const groupRows: BreakdownGroup[] = taxonomy.groups.map((g, i) => {
+    const cats = taxonomy.categories
+      .filter((c) => c.group_id === g.id)
+      .map((c) => row(catKey(c.id), c.name, catBudget.get(c.id) ?? null))
+      .sort((a, b) => b.total - a.total);
+    return {
+      key: `g${g.id}`,
+      name: g.name,
+      color: SLOTS[i] ?? OTHER,
+      total: cats.reduce((s, c) => s + c.total, 0),
+      prev: sum(cats, (c) => c.prev),
+      budget: groupBudget.get(g.id) ?? null,
+      merchants: [],
+      categories: cats,
+    };
+  });
+  const unsorted = [row(NONE, "Uncategorized", null), row(MANUAL, "Card totals (no statement)", null)];
+  groupRows.push({
+    key: "unsorted",
+    name: "Uncategorized",
+    color: OTHER,
+    total: unsorted.reduce((s, c) => s + c.total, 0),
+    prev: sum(unsorted, (c) => c.prev),
+    budget: null,
+    merchants: [],
+    categories: unsorted,
+  });
   // Only what has activity in the window, biggest first.
   const cardRows = cards
     .map((c) => ({ key: `card-${c.id}`, name: c.name, amount: cur.byCard.get(c.id) ?? 0 }))
@@ -377,7 +451,7 @@ export default function SpendingRange({
 
       <div className="border-t border-line pt-5">
         <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <p className="text-xs text-faint">By category</p>
+          <p className="text-xs text-faint">By group · click one for its categories and merchants</p>
           {credits !== 0 && (
             <span className="text-xs text-faint">
               total includes <span className="tabular-nums text-[#17a06b]">{fmtUSD(credits)}</span> of card credits
@@ -385,19 +459,18 @@ export default function SpendingRange({
           )}
         </div>
         <div className="grid gap-6 lg:grid-cols-[minmax(0,400px)_1fr]">
-          <CategoryDonut slices={spend.filter((s) => s.total > 0).map((s) => ({ label: s.category, value: s.total }))} />
+          <CategoryDonut
+            slices={groupRows
+              .filter((g) => g.total > 0)
+              .map((g) => ({ label: g.name, value: g.total, color: g.color }))}
+          />
           <div>
-            <p className="mb-3 text-xs text-faint">
+            <p className="mb-2 text-xs text-faint">
               Net of returns
               {budgets.length > 0 ? ` · vs budget scaled to ${len} days` : ""}
-              {trend.size > 0 ? ` · % vs ${prevLabel}` : ""}
+              {comparable ? ` · % vs ${prevLabel}` : ""}
             </p>
-            <CategoryBreakdown
-              spend={spend}
-              budgets={scaledBudgets}
-              trend={trend}
-              trendLabel={`vs this category's spending in the ${prevLabel}`}
-            />
+            <GroupBreakdown groups={groupRows} trendLabel={`vs the ${prevLabel}`} />
           </div>
         </div>
       </div>

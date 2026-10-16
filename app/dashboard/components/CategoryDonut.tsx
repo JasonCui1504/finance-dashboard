@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import { fmtUSD } from "./format";
 import { prefersReducedMotion } from "./motion";
 
-type Slice = { label: string; value: number };
+/** A fixed colour keeps an entity's colour whatever its rank (e.g. per group). */
+type Slice = { label: string; value: number; color?: string };
 
 const SIZE = 180;
 const R = 70;
@@ -15,8 +16,8 @@ const GAP_RAD = 0.035; // ~2px surface gap between segments
 // blue under deuteranopia. Validated against #141c17 — lightness band, chroma,
 // contrast and the normal-vision floor all pass; CVD separation sits in the
 // 6–8 band, which the legend's labels and values cover as secondary encoding.
-const SLOTS = ["#17a06b", "#3b82d6", "#d9730d", "#c2255c"];
-const OTHER = "#8aa498";
+export const SLOTS = ["#17a06b", "#3b82d6", "#d9730d", "#c2255c"];
+export const OTHER = "#8aa498";
 /** Beyond the four coloured slots everything shares one muted slice. */
 const MAX_SLICES = SLOTS.length;
 /** The catch-all spending category (lib/finance/categories.ts). */
@@ -56,6 +57,8 @@ export default function CategoryDonut({ slices }: { slices: Slice[] }) {
   // The catch-all "Other" category never takes a coloured slot: it shares
   // the muted slice, so a named category gets the colour instead and the
   // legend never shows "Other" twice.
+  // Slices that bring their own colour are drawn as given, no folding.
+  const fixedColors = positive.every((s) => s.color);
   const named = positive.filter((s) => s.label !== CATCH_ALL);
   const catchAll = positive.find((s) => s.label === CATCH_ALL);
   const head = named.slice(0, MAX_SLICES);
@@ -64,19 +67,21 @@ export default function CategoryDonut({ slices }: { slices: Slice[] }) {
   );
   // One leftover keeps its own name; several fold into "More (N)", listed below it.
   const tail = rest.length > 1 ? rest : [];
-  const visible: (Slice & { color: string })[] = head.map((s, i) => ({
-    ...s,
-    color: SLOTS[i],
-  }));
-  if (rest.length === 1) visible.push({ ...rest[0], color: OTHER });
-  if (tail.length > 0) {
+  const visible: (Slice & { color: string })[] = fixedColors
+    ? positive.map((s) => ({ ...s, color: s.color! }))
+    : head.map((s, i) => ({
+        ...s,
+        color: SLOTS[i],
+      }));
+  if (!fixedColors && rest.length === 1) visible.push({ ...rest[0], color: OTHER });
+  if (!fixedColors && tail.length > 0) {
     visible.push({
       label: `More (${tail.length})`,
       value: tail.reduce((sum, s) => sum + s.value, 0),
       color: OTHER,
     });
   }
-  const foldIndex = tail.length > 0 ? visible.length - 1 : -1;
+  const foldIndex = !fixedColors && tail.length > 0 ? visible.length - 1 : -1;
 
   const total = visible.reduce((sum, s) => sum + s.value, 0);
   const c = SIZE / 2;

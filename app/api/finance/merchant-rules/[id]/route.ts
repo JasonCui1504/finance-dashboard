@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { badRequest, parseId, requireSession } from "../../../../../lib/finance/api";
 import { getDb } from "../../../../../lib/finance/db";
-import { isCategory, normalizeDescription } from "../../../../../lib/finance/categories";
+import { normalizeDescription } from "../../../../../lib/finance/categories";
+import { categoryLabel, resolveCategoryId } from "../../../../../lib/finance/taxonomy";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -16,9 +17,9 @@ export async function PUT(request: NextRequest, ctx: Ctx) {
   // can't be saved in a form that could never match anything.
   const key = normalizeDescription(String(b.match_key ?? ""));
   if (key.length < 2) return badRequest("Match text must be at least 2 characters");
-  if (typeof b.category !== "string" || !isCategory(b.category)) {
-    return badRequest("Invalid category");
-  }
+  // null keeps the merchant Uncategorized (overriding the keyword guess).
+  const categoryId = await resolveCategoryId(b.category_id);
+  if (categoryId === "invalid") return badRequest("Unknown category");
 
   const db = await getDb();
   const clash = await db.execute({
@@ -28,8 +29,8 @@ export async function PUT(request: NextRequest, ctx: Ctx) {
   if (clash.rows.length) return badRequest(`A rule for "${key}" already exists`);
 
   await db.execute({
-    sql: "UPDATE merchant_rules SET match_key = ?, category = ? WHERE id = ?",
-    args: [key, b.category, id],
+    sql: "UPDATE merchant_rules SET match_key = ?, category = ?, category_id = ? WHERE id = ?",
+    args: [key, await categoryLabel(categoryId), categoryId, id],
   });
   return Response.json({ ok: true });
 }

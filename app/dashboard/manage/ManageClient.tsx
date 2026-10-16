@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { fmtUSD } from "../components/format";
-import { CATEGORIES } from "../../../lib/finance/categories";
+import CategorySelect, { useTaxonomy } from "./CategorySelect";
 import { summarizeTax } from "../../../lib/finance/tax";
 import { CASH_TICKER } from "../../../lib/finance/prices";
 import StatementImport from "./StatementImport";
@@ -46,7 +46,13 @@ type Income = {
   tax_withheld: number | null;
 };
 type CreditCard = { id: number; name: string; issuer: string };
-type Bill = { id: number; name: string; amount: number; start_month: string };
+type Bill = {
+  id: number;
+  name: string;
+  amount: number;
+  start_month: string;
+  category_id: number | null;
+};
 type BillPayment = { id: number; bill_id: number; month: string; amount: number };
 type CardPayment = {
   id: number;
@@ -62,12 +68,24 @@ type Transaction = {
   description: string;
   amount: number;
   category: string;
+  category_id: number | null;
+  category_source: string;
   is_card_credit: boolean;
   benefit_id: number | null;
   hidden: boolean;
 };
-type Budget = { id: number; category: string; monthly_limit: number };
-type MerchantRule = { id: number; match_key: string; category: string };
+type Budget = {
+  id: number;
+  group_id: number | null;
+  category_id: number | null;
+  monthly_limit: number;
+};
+type MerchantRule = {
+  id: number;
+  match_key: string;
+  category: string;
+  category_id: number | null;
+};
 type CardBenefit = {
   id: number;
   card_id: number;
@@ -76,7 +94,16 @@ type CardBenefit = {
   period: "annual" | "monthly";
 };
 
-const TABS = ["Accounts", "Holdings", "Retirement", "CDs", "Income", "Spending", "Settings"] as const;
+const TABS = [
+  "Accounts",
+  "Holdings",
+  "Retirement",
+  "CDs",
+  "Income",
+  "Spending",
+  "Categories",
+  "Settings",
+] as const;
 
 const NET_WORTH_CATEGORIES: { key: string; label: string }[] = [
   { key: "brokerage", label: "Brokerage" },
@@ -253,6 +280,7 @@ export default function ManageClient({ seedEnabled }: { seedEnabled: boolean }) 
       {tab === "CDs" && <CdsTab note={note} touch={touch} />}
       {tab === "Income" && <IncomeTab note={note} touch={touch} />}
       {tab === "Spending" && <SpendingTab note={note} touch={touch} />}
+      {tab === "Categories" && <CategoriesTab note={note} touch={touch} />}
       {tab === "Settings" && <SettingsTab note={note} touch={touch} />}
 
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-4 text-xs text-faint">
@@ -1629,6 +1657,7 @@ function billMonth(month: string, long = false): string {
 function BillsSection({ note, touch }: TabProps) {
   const { items: bills, loaded, reload: reloadBills } = useList<Bill>("/api/finance/bills");
   const { items: payments, reload: reloadPayments } = useList<BillPayment>("/api/finance/bill-payments");
+  const { taxonomy } = useTaxonomy();
   const [month, setMonth] = useState(currentMonth());
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [form, setForm] = useState({ name: "", amount: "" });
@@ -1686,6 +1715,15 @@ function BillsSection({ note, touch }: TabProps) {
         body: JSON.stringify({ name: form.name, amount: Number(form.amount) }),
       });
       setForm({ name: "", amount: "" });
+      refresh();
+    } catch (err) {
+      note("err", err instanceof Error ? err.message : "Failed");
+    }
+  }
+
+  async function setBillCategory(b: Bill, category_id: number | null) {
+    try {
+      await api(`/api/finance/bills/${b.id}`, { method: "PUT", body: JSON.stringify({ category_id }) });
       refresh();
     } catch (err) {
       note("err", err instanceof Error ? err.message : "Failed");
@@ -1826,6 +1864,13 @@ function BillsSection({ note, touch }: TabProps) {
           {bills.map((b) => (
             <Row key={`${b.id}-${b.amount}`}>
               <span className="text-prose">{b.name}</span>
+              <CategorySelect
+                value={b.category_id}
+                onChange={(category_id) => setBillCategory(b, category_id)}
+                taxonomy={taxonomy}
+                ariaLabel={`Category for ${b.name}`}
+                className="rounded border border-line bg-canvas px-1.5 py-1 text-xs text-subtle outline-none focus:border-accent"
+              />
               <label className="ml-auto flex items-center gap-1.5 text-xs text-faint">
                 usually $
                 <input
@@ -1882,12 +1927,9 @@ function SpendingTab({ note, touch }: TabProps) {
     useList<CardPayment>("/api/finance/card-payments");
   const { items: transactions, reload: reloadTx } =
     useList<Transaction>("/api/finance/transactions");
-  const { items: budgets, reload: reloadBudgets } =
-    useList<Budget>("/api/finance/budgets");
   const { items: benefits, reload: reloadBenefits } =
     useList<CardBenefit>("/api/finance/card-benefits");
-  const { items: merchantRules, reload: reloadRules } =
-    useList<MerchantRule>("/api/finance/merchant-rules");
+  const { taxonomy } = useTaxonomy();
 
   const [benefitForm, setBenefitForm] = useState({
     card_id: "",
@@ -1897,7 +1939,6 @@ function SpendingTab({ note, touch }: TabProps) {
   });
   const [cardForm, setCardForm] = useState({ name: "", issuer: "" });
   const [pay, setPay] = useState({ card_id: "", month: currentMonth(), amount: "" });
-  const [budgetForm, setBudgetForm] = useState({ category: CATEGORIES[0], monthly_limit: "" });
   const [showManual, setShowManual] = useState(false);
   const [txSearch, setTxSearch] = useState("");
   const [filterCategory, setFilterCategory] = useState("");
@@ -1957,59 +1998,13 @@ function SpendingTab({ note, touch }: TabProps) {
     touch();
   }
 
-  async function saveBudget(e: React.FormEvent) {
-    e.preventDefault();
-    try {
-      await api("/api/finance/budgets", {
-        method: "POST",
-        body: JSON.stringify({
-          category: budgetForm.category,
-          monthly_limit: Number(budgetForm.monthly_limit),
-        }),
-      });
-      setBudgetForm({ ...budgetForm, monthly_limit: "" });
-      reloadBudgets();
-      touch();
-    } catch (err) {
-      note("err", err instanceof Error ? err.message : "Failed");
-    }
-  }
-
-  async function removeBudget(category: string) {
-    await api("/api/finance/budgets", {
-      method: "DELETE",
-      body: JSON.stringify({ category }),
-    });
-    reloadBudgets();
-    touch();
-  }
-
-  async function setTxCategory(id: number, category: string) {
+  async function setTxCategory(id: number, category_id: number | null) {
     await api(`/api/finance/transactions/${id}`, {
       method: "PUT",
-      body: JSON.stringify({ category }),
+      body: JSON.stringify({ category_id }),
     });
     reloadTx();
-    reloadRules();
     touch();
-  }
-
-  async function saveRule(rule: MerchantRule, match_key: string, category: string) {
-    try {
-      await api(`/api/finance/merchant-rules/${rule.id}`, {
-        method: "PUT",
-        body: JSON.stringify({ match_key, category }),
-      });
-      reloadRules();
-    } catch (err) {
-      note("err", err instanceof Error ? err.message : "Failed");
-      reloadRules();
-    }
-  }
-
-  async function removeRule(rule: MerchantRule) {
-    await api(`/api/finance/merchant-rules/${rule.id}`, { method: "DELETE" });
-    reloadRules();
   }
 
   async function removeTx(id: number) {
@@ -2312,114 +2307,16 @@ function SpendingTab({ note, touch }: TabProps) {
             />
           </div>
 
-          {/* Budgets */}
-          <div className="flex flex-col gap-3">
-            <h3 className="text-sm font-medium text-subtle">Learned merchants</h3>
-            <p className="text-xs text-faint">
-              Changing a transaction&apos;s category teaches a rule, so the next
-              import of that merchant lands there without being corrected again.
-              Rules beat both the issuer&apos;s own category and the built-in
-              keywords. Widen the match text to cover more variants.
-            </p>
-            <ul>
-              {merchantRules.map((r) => (
-                <Row key={r.id}>
-                  <input
-                    defaultValue={r.match_key}
-                    onBlur={(e) => {
-                      const next = e.target.value.trim();
-                      if (next && next !== r.match_key) saveRule(r, next, r.category);
-                    }}
-                    className="w-48 rounded border border-line bg-canvas px-1.5 py-1 font-mono text-xs text-prose outline-none focus:border-accent"
-                  />
-                  <span className="text-xs text-faint">→</span>
-                  <select
-                    value={r.category}
-                    onChange={(e) => saveRule(r, r.match_key, e.target.value)}
-                    className="rounded border border-line bg-canvas px-1.5 py-1 text-xs text-prose outline-none focus:border-accent"
-                  >
-                    {CATEGORIES.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="ml-auto" />
-                  <button onClick={() => removeRule(r)} className={delBtnCls}>
-                    delete
-                  </button>
-                </Row>
-              ))}
-              {merchantRules.length === 0 && (
-                <p className="py-3 text-sm text-faint">
-                  No rules yet. Recategorize a transaction below and one appears
-                  here.
-                </p>
-              )}
-            </ul>
-          </div>
-
-          <div className="flex flex-col gap-3">
-            <h3 className="text-sm font-medium text-subtle">Monthly budgets by category</h3>
-            <form onSubmit={saveBudget} className="flex flex-wrap items-end gap-2">
-              <Field label="Category">
-                <select
-                  value={budgetForm.category}
-                  onChange={(e) =>
-                    setBudgetForm({ ...budgetForm, category: e.target.value as typeof budgetForm.category })
-                  }
-                  className={inputCls}
-                >
-                  {CATEGORIES.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Monthly limit">
-                <input
-                  required
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={budgetForm.monthly_limit}
-                  onChange={(e) =>
-                    setBudgetForm({ ...budgetForm, monthly_limit: e.target.value })
-                  }
-                  className={`${inputCls} w-32`}
-                />
-              </Field>
-              <button className={btnCls}>Set budget</button>
-            </form>
-            <ul>
-              {budgets.map((b) => (
-                <Row key={b.id}>
-                  <span className="text-prose">{b.category}</span>
-                  <span className="ml-auto tabular-nums text-subtle">
-                    {fmtUSD(b.monthly_limit)}/mo
-                  </span>
-                  <button onClick={() => removeBudget(b.category)} className={delBtnCls}>
-                    delete
-                  </button>
-                </Row>
-              ))}
-              {budgets.length === 0 && (
-                <p className="py-4 text-sm text-faint">
-                  No budgets set. Add a limit per category to track over/under on
-                  the dashboard.
-                </p>
-              )}
-            </ul>
-          </div>
-
           {/* Recent transactions */}
           {(() => {
             const q = txSearch.trim().toLowerCase();
             const filtered = transactions.filter(
               (t) =>
                 (q === "" || t.description.toLowerCase().includes(q)) &&
-                (filterCategory === "" || t.category === filterCategory) &&
+                (filterCategory === "" ||
+                  (filterCategory === "none"
+                    ? t.category_id == null
+                    : String(t.category_id) === filterCategory)) &&
                 (filterCard === "" || String(t.card_id) === filterCard) &&
                 (filterHidden === "include" ||
                   (filterHidden === "only" ? t.hidden : !t.hidden))
@@ -2477,10 +2374,17 @@ function SpendingTab({ note, touch }: TabProps) {
                         className={inputCls}
                       >
                         <option value="">All categories</option>
-                        {CATEGORIES.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
-                          </option>
+                        <option value="none">Uncategorized</option>
+                        {taxonomy.groups.map((g) => (
+                          <optgroup key={g.id} label={g.name}>
+                            {taxonomy.categories
+                              .filter((c) => c.group_id === g.id)
+                              .map((c) => (
+                                <option key={c.id} value={String(c.id)}>
+                                  {c.name}
+                                </option>
+                              ))}
+                          </optgroup>
                         ))}
                       </select>
                       <select
@@ -2633,17 +2537,13 @@ function SpendingTab({ note, touch }: TabProps) {
                           {fmtUSD(t.amount)}
                         </td>
                         <td className="p-2">
-                          <select
-                            value={t.category}
-                            onChange={(e) => setTxCategory(t.id, e.target.value)}
+                          <CategorySelect
+                            value={t.category_id}
+                            onChange={(id) => setTxCategory(t.id, id)}
+                            taxonomy={taxonomy}
+                            ariaLabel={`Category for ${t.description}`}
                             className="rounded border border-line bg-canvas px-1.5 py-1 text-xs text-prose outline-none focus:border-accent"
-                          >
-                            {CATEGORIES.map((c) => (
-                              <option key={c} value={c}>
-                                {c}
-                              </option>
-                            ))}
-                          </select>
+                          />
                         </td>
                         <td className="p-2">
                           {t.amount < 0 ? (
@@ -2859,6 +2759,492 @@ function SpendingTab({ note, touch }: TabProps) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ---------- Categories (labels, merchant rules, budgets, re-sort) ----------
+
+type ResortReport = {
+  total_transactions: number;
+  changes: number;
+  categories: {
+    category_id: number | null;
+    name: string;
+    group: string | null;
+    count: number;
+    total: number;
+    top_merchants: { name: string; total: number; count: number }[];
+  }[];
+  subscriptions: { name: string; amount: number; count: number }[];
+};
+
+/**
+ * Everything about how spending is labelled: rename / add / move / delete
+ * groups and categories, the merchant rules you've taught, budgets, and the
+ * reviewed re-sort that applies all of it to past transactions.
+ */
+function CategoriesTab({ note, touch }: TabProps) {
+  const { taxonomy, reload: reloadTax } = useTaxonomy();
+  const { items: rules, reload: reloadRules } = useList<MerchantRule>("/api/finance/merchant-rules");
+  const { items: budgets, reload: reloadBudgets } = useList<Budget>("/api/finance/budgets");
+  const [report, setReport] = useState<ResortReport | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [newCat, setNewCat] = useState<Record<number, string>>({});
+  const [newGroup, setNewGroup] = useState("");
+  const [deleting, setDeleting] = useState<{ id: number; moveTo: number | null } | null>(null);
+  const [budgetForm, setBudgetForm] = useState({ target: "", monthly_limit: "" });
+  const [ruleSearch, setRuleSearch] = useState("");
+
+  function refreshAll() {
+    reloadTax();
+    reloadRules();
+    reloadBudgets();
+    touch();
+  }
+
+  async function run(action: () => Promise<unknown>, ok?: string) {
+    try {
+      await action();
+      if (ok) note("ok", ok);
+      refreshAll();
+    } catch (err) {
+      note("err", err instanceof Error ? err.message : "Failed");
+      refreshAll();
+    }
+  }
+
+  async function preview() {
+    setBusy(true);
+    try {
+      setReport(await api<ResortReport>("/api/finance/categories/resort"));
+    } catch (err) {
+      note("err", err instanceof Error ? err.message : "Preview failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyResort() {
+    if (!report) return;
+    if (!confirm(`Re-sort ${report.changes} transactions? Your database is backed up first.`)) return;
+    setBusy(true);
+    try {
+      const r = await api<{ changed: number; backup: string | null }>("/api/finance/categories/resort", {
+        method: "POST",
+      });
+      note("ok", `Re-sorted ${r.changed} transactions.${r.backup ? ` Backup saved to ${r.backup}` : ""}`);
+      setReport(null);
+      refreshAll();
+    } catch (err) {
+      note("err", err instanceof Error ? err.message : "Re-sort failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const rename = (kind: "group" | "category", id: number, name: string) =>
+    run(() =>
+      api(kind === "group" ? `/api/finance/category-groups/${id}` : `/api/finance/categories/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ name }),
+      })
+    );
+
+  const groupName = (id: number | null) => taxonomy.groups.find((g) => g.id === id)?.name ?? "";
+  const cat = (id: number | null) => taxonomy.categories.find((c) => c.id === id);
+  const budgetLabel = (b: Budget) =>
+    b.group_id != null
+      ? `${groupName(b.group_id)} (whole group)`
+      : `${groupName(cat(b.category_id)?.group_id ?? null)} › ${cat(b.category_id)?.name ?? "?"}`;
+  const shownRules = rules.filter(
+    (r) => !ruleSearch.trim() || r.match_key.includes(ruleSearch.trim().toLowerCase())
+  );
+
+  return (
+    <div className="flex flex-col gap-8">
+      {/* Re-sort */}
+      <div className="flex flex-col gap-3">
+        <h3 className="text-sm font-medium text-subtle">Sort past transactions</h3>
+        <p className="text-xs text-faint">
+          New statements are sorted as they&apos;re imported. This applies the current labels and
+          rules to everything already imported: categories you picked by hand stay put, then
+          your merchant rules, the card issuer&apos;s label and the keyword rules decide, and
+          monthly repeat charges become Subscriptions. Preview first; nothing changes until you
+          apply, and the database is backed up before it does.
+        </p>
+        <div className="flex gap-2">
+          <button type="button" onClick={preview} disabled={busy} className={ghostBtnCls}>
+            {report ? "Refresh preview" : "Preview re-sort"}
+          </button>
+          {report && (
+            <>
+              <button
+                type="button"
+                onClick={applyResort}
+                disabled={busy || report.changes === 0}
+                className={btnCls}
+              >
+                Apply ({report.changes} {report.changes === 1 ? "change" : "changes"})
+              </button>
+              <button type="button" onClick={() => setReport(null)} className={ghostBtnCls}>
+                Cancel
+              </button>
+            </>
+          )}
+        </div>
+        {report && (
+          <div className="overflow-x-auto rounded border border-line">
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs text-faint">
+                <tr>
+                  <th className="p-2 font-normal">Category</th>
+                  <th className="p-2 text-right font-normal">Transactions</th>
+                  <th className="p-2 text-right font-normal">Net total</th>
+                  <th className="p-2 font-normal">Top merchants</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.categories.map((c) => (
+                  <tr key={c.category_id ?? "none"} className="border-t border-line align-top">
+                    <td className={`p-2 ${c.category_id == null ? "text-[#e6a23c]" : "text-prose"}`}>
+                      {c.group && <span className="text-xs text-faint">{c.group} › </span>}
+                      {c.name}
+                    </td>
+                    <td className="p-2 text-right tabular-nums text-subtle">{c.count}</td>
+                    <td className="p-2 text-right tabular-nums text-prose">{fmtUSD(c.total)}</td>
+                    <td className="p-2 text-xs text-faint">
+                      {c.top_merchants.map((m) => `${m.name} ${fmtUSD(m.total, 0)}`).join(" · ")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {report.subscriptions.length > 0 && (
+              <p className="border-t border-line p-2 text-xs text-faint">
+                Monthly charges found:{" "}
+                {report.subscriptions.map((s) => `${s.name} ${fmtUSD(s.amount)}`).join(" · ")}
+              </p>
+            )}
+            <p className="border-t border-line p-2 text-xs text-faint">
+              Something in the wrong place? Fix one of its transactions under Spending (that teaches
+              its merchant), or add a rule below, then refresh the preview.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Groups & categories */}
+      <div className="flex flex-col gap-4">
+        <h3 className="text-sm font-medium text-subtle">Groups &amp; categories</h3>
+        <p className="text-xs text-faint">
+          Rename anything — click a name and type. Built-in categories keep their keyword rules
+          when renamed.
+        </p>
+        {taxonomy.groups.map((g) => {
+          const cats = taxonomy.categories.filter((c) => c.group_id === g.id);
+          return (
+            <div key={g.id} className="rounded-lg border border-line p-3">
+              <div className="flex items-center gap-2">
+                <input
+                  key={g.name}
+                  defaultValue={g.name}
+                  aria-label="Group name"
+                  onBlur={(e) => {
+                    const next = e.target.value.trim();
+                    if (next && next !== g.name) rename("group", g.id, next);
+                  }}
+                  className="w-48 rounded border border-transparent bg-transparent px-1.5 py-1 text-sm font-medium text-prose outline-none hover:border-line focus:border-accent"
+                />
+                <span className="text-xs text-faint">group</span>
+                {cats.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={() => run(() => api(`/api/finance/category-groups/${g.id}`, { method: "DELETE" }))}
+                    className={`ml-auto ${delBtnCls}`}
+                  >
+                    delete group
+                  </button>
+                )}
+              </div>
+              <ul className="mt-2">
+                {cats.map((c) => (
+                  <li key={c.id} className="flex flex-wrap items-center gap-2 border-t border-line py-1.5 pl-4 text-sm">
+                    <input
+                      key={c.name}
+                      defaultValue={c.name}
+                      aria-label="Category name"
+                      onBlur={(e) => {
+                        const next = e.target.value.trim();
+                        if (next && next !== c.name) rename("category", c.id, next);
+                      }}
+                      className="w-48 rounded border border-transparent bg-transparent px-1.5 py-1 text-sm text-subtle outline-none hover:border-line focus:border-accent"
+                    />
+                    <select
+                      aria-label={`Group for ${c.name}`}
+                      value={c.group_id}
+                      onChange={(e) =>
+                        run(() =>
+                          api(`/api/finance/categories/${c.id}`, {
+                            method: "PUT",
+                            body: JSON.stringify({ group_id: Number(e.target.value) }),
+                          })
+                        )
+                      }
+                      className="rounded border border-line bg-canvas px-1.5 py-1 text-xs text-faint outline-none focus:border-accent"
+                    >
+                      {taxonomy.groups.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          in {o.name}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="ml-auto" />
+                    {deleting?.id === c.id ? (
+                      <span className="flex items-center gap-1.5 text-xs text-faint">
+                        move its transactions to
+                        <CategorySelect
+                          value={deleting.moveTo}
+                          onChange={(id) => setDeleting({ id: c.id, moveTo: id })}
+                          taxonomy={{ ...taxonomy, categories: taxonomy.categories.filter((o) => o.id !== c.id) }}
+                          className="rounded border border-line bg-canvas px-1.5 py-1 text-xs text-prose outline-none focus:border-accent"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const moveTo = deleting.moveTo;
+                            setDeleting(null);
+                            run(
+                              () =>
+                                api(`/api/finance/categories/${c.id}`, {
+                                  method: "DELETE",
+                                  body: JSON.stringify({ move_to: moveTo }),
+                                }),
+                              `Deleted "${c.name}".`
+                            );
+                          }}
+                          className="text-red-400 hover:text-red-300"
+                        >
+                          delete
+                        </button>
+                        <button type="button" onClick={() => setDeleting(null)} className={linkBtnCls}>
+                          cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setDeleting({ id: c.id, moveTo: null })}
+                        className={delBtnCls}
+                      >
+                        delete
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const name = (newCat[g.id] ?? "").trim();
+                  if (!name) return;
+                  setNewCat({ ...newCat, [g.id]: "" });
+                  run(() =>
+                    api("/api/finance/categories", {
+                      method: "POST",
+                      body: JSON.stringify({ name, group_id: g.id }),
+                    })
+                  );
+                }}
+                className="mt-2 flex items-center gap-2 pl-4"
+              >
+                <input
+                  placeholder={`New category in ${g.name}`}
+                  value={newCat[g.id] ?? ""}
+                  onChange={(e) => setNewCat({ ...newCat, [g.id]: e.target.value })}
+                  className={`${inputCls} w-56 py-1 text-xs`}
+                />
+                <button className={ghostBtnCls} disabled={!(newCat[g.id] ?? "").trim()}>
+                  Add
+                </button>
+              </form>
+            </div>
+          );
+        })}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const name = newGroup.trim();
+            if (!name) return;
+            setNewGroup("");
+            run(() => api("/api/finance/categories", { method: "POST", body: JSON.stringify({ kind: "group", name }) }));
+          }}
+          className="flex items-center gap-2"
+        >
+          <input
+            placeholder="New group"
+            value={newGroup}
+            onChange={(e) => setNewGroup(e.target.value)}
+            className={`${inputCls} w-56`}
+          />
+          <button className={ghostBtnCls} disabled={!newGroup.trim()}>
+            Add group
+          </button>
+        </form>
+      </div>
+
+      {/* Merchant rules */}
+      <div className="flex flex-col gap-3">
+        <h3 className="text-sm font-medium text-subtle">Learned merchants</h3>
+        <p className="text-xs text-faint">
+          Picking a transaction&apos;s category (under Spending, or in the import preview) teaches a
+          rule, so that merchant lands there from then on. Rules beat the issuer&apos;s label and the
+          keywords. Widen the match text to cover more variants.
+        </p>
+        {rules.length > 8 && (
+          <input
+            type="search"
+            placeholder="Search merchants…"
+            value={ruleSearch}
+            onChange={(e) => setRuleSearch(e.target.value)}
+            className={`${inputCls} w-56`}
+          />
+        )}
+        <ul>
+          {shownRules.map((r) => (
+            <Row key={`${r.id}-${r.match_key}-${r.category_id}`}>
+              <input
+                defaultValue={r.match_key}
+                aria-label="Match text"
+                onBlur={(e) => {
+                  const next = e.target.value.trim();
+                  if (next && next !== r.match_key)
+                    run(() =>
+                      api(`/api/finance/merchant-rules/${r.id}`, {
+                        method: "PUT",
+                        body: JSON.stringify({ match_key: next, category_id: r.category_id }),
+                      })
+                    );
+                }}
+                className="w-48 rounded border border-line bg-canvas px-1.5 py-1 font-mono text-xs text-prose outline-none focus:border-accent"
+              />
+              <span className="text-xs text-faint">→</span>
+              <CategorySelect
+                value={r.category_id}
+                onChange={(category_id) =>
+                  run(() =>
+                    api(`/api/finance/merchant-rules/${r.id}`, {
+                      method: "PUT",
+                      body: JSON.stringify({ match_key: r.match_key, category_id }),
+                    })
+                  )
+                }
+                taxonomy={taxonomy}
+                ariaLabel={`Category for ${r.match_key}`}
+                className="rounded border border-line bg-canvas px-1.5 py-1 text-xs text-prose outline-none focus:border-accent"
+              />
+              <span className="ml-auto" />
+              <button
+                onClick={() => run(() => api(`/api/finance/merchant-rules/${r.id}`, { method: "DELETE" }))}
+                className={delBtnCls}
+              >
+                delete
+              </button>
+            </Row>
+          ))}
+          {rules.length === 0 && (
+            <p className="py-3 text-sm text-faint">
+              No rules yet. Recategorize a transaction under Spending and one appears here.
+            </p>
+          )}
+        </ul>
+      </div>
+
+      {/* Budgets */}
+      <div className="flex flex-col gap-3">
+        <h3 className="text-sm font-medium text-subtle">Monthly budgets</h3>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const [kind, id] = budgetForm.target.split(":");
+            run(
+              () =>
+                api("/api/finance/budgets", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    [kind === "g" ? "group_id" : "category_id"]: Number(id),
+                    monthly_limit: Number(budgetForm.monthly_limit),
+                  }),
+                }),
+              "Budget saved."
+            );
+            setBudgetForm({ ...budgetForm, monthly_limit: "" });
+          }}
+          className="flex flex-wrap items-end gap-2"
+        >
+          <Field label="For">
+            <select
+              required
+              value={budgetForm.target}
+              onChange={(e) => setBudgetForm({ ...budgetForm, target: e.target.value })}
+              className={inputCls}
+            >
+              <option value="">Choose…</option>
+              <optgroup label="Whole group">
+                {taxonomy.groups.map((g) => (
+                  <option key={g.id} value={`g:${g.id}`}>
+                    {g.name}
+                  </option>
+                ))}
+              </optgroup>
+              {taxonomy.groups.map((g) => (
+                <optgroup key={g.id} label={g.name}>
+                  {taxonomy.categories
+                    .filter((c) => c.group_id === g.id)
+                    .map((c) => (
+                      <option key={c.id} value={`c:${c.id}`}>
+                        {c.name}
+                      </option>
+                    ))}
+                </optgroup>
+              ))}
+            </select>
+          </Field>
+          <Field label="Monthly limit">
+            <input
+              required
+              type="number"
+              step="0.01"
+              min="0"
+              value={budgetForm.monthly_limit}
+              onChange={(e) => setBudgetForm({ ...budgetForm, monthly_limit: e.target.value })}
+              className={`${inputCls} w-32`}
+            />
+          </Field>
+          <button className={btnCls}>Set budget</button>
+        </form>
+        <ul>
+          {budgets.map((b) => (
+            <Row key={b.id}>
+              <span className="text-prose">{budgetLabel(b)}</span>
+              <span className="ml-auto tabular-nums text-subtle">{fmtUSD(b.monthly_limit)}/mo</span>
+              <button
+                onClick={() =>
+                  run(() => api("/api/finance/budgets", { method: "DELETE", body: JSON.stringify({ id: b.id }) }))
+                }
+                className={delBtnCls}
+              >
+                delete
+              </button>
+            </Row>
+          ))}
+          {budgets.length === 0 && (
+            <p className="py-4 text-sm text-faint">
+              No budgets set. Budgets scale to whatever date range the dashboard shows.
+            </p>
+          )}
+        </ul>
+      </div>
     </div>
   );
 }

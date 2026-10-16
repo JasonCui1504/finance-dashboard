@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { badRequest, requireSession } from "../../../../lib/finance/api";
 import { getDb } from "../../../../lib/finance/db";
+import { guessBillCategoryId, resolveCategoryId } from "../../../../lib/finance/taxonomy";
 import { listBills } from "../../../../lib/finance/queries";
 
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -23,9 +24,12 @@ export async function POST(request: NextRequest) {
   const startMonth = typeof b.start_month === "string" && MONTH.test(b.start_month) ? b.start_month : new Date().toISOString().slice(0, 7);
 
   const db = await getDb();
+  const given = await resolveCategoryId(b.category_id);
+  if (given === "invalid") return badRequest("Unknown category");
+  const categoryId = given ?? (await guessBillCategoryId(b.name.trim()));
   const rs = await db.execute({
-    sql: "INSERT INTO bills (name, amount, start_month) VALUES (?, ?, ?) RETURNING id",
-    args: [b.name.trim(), amount, startMonth],
+    sql: "INSERT INTO bills (name, amount, start_month, category_id) VALUES (?, ?, ?, ?) RETURNING id",
+    args: [b.name.trim(), amount, startMonth, categoryId],
   });
   return Response.json({ id: Number(rs.rows[0].id) }, { status: 201 });
 }

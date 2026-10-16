@@ -17,3 +17,10 @@ export function parseId(raw: string): number | null {
   const id = Number(raw);
   return Number.isInteger(id) && id > 0 ? id : null;
 }
+
+/** A trimmed label of 1–40 characters, or null. */
+export function cleanLabel(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim().replace(/\s+/g, " ");
+  return s.length >= 1 && s.length <= 40 ? s : null;
+}

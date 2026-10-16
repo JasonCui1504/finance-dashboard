@@ -13,6 +13,7 @@
 // - Nothing is persisted: no chat history on disk, server or browser.
 
 import { summarizePaychecks } from "./paychecks";
+import { getTaxonomy, listSpendingBudgets } from "./taxonomy";
 import {
   CARD_CREDITS,
   cdCurrentValue,
@@ -28,7 +29,6 @@ import {
   listAccounts,
   listBillPayments,
   listBills,
-  listBudgets,
   listCardBenefits,
   listCds,
   listCreditCards,
@@ -95,6 +95,8 @@ export async function buildFinanceContext(now = new Date()): Promise<string> {
     bills,
     billPayments,
     transactions,
+    groupByMonth,
+    taxonomy,
   ] = await Promise.all([
     getLatestSnapshot(),
     getSnapshotHistory(),
@@ -107,13 +109,15 @@ export async function buildFinanceContext(now = new Date()): Promise<string> {
     getMonthlySpending(12),
     getCardSpendForMonth(thisMonth),
     getCategorySpendByMonth(),
-    listBudgets(),
+    listSpendingBudgets(),
     getSettings(),
     listCardBenefits(),
     getBenefitProgress(year),
     listBills(),
     listBillPayments(),
     listTransactions(RECENT_TX_LIMIT + 1),
+    getCategorySpendByMonth("group"),
+    getTaxonomy(),
   ]);
 
   // Categories hidden on the dashboard stay out of the summary too, so the
@@ -241,24 +245,50 @@ export async function buildFinanceContext(now = new Date()): Promise<string> {
     out.push("\n## Total spending per month (cards + bills; current month is partial)");
     for (const m of monthly) out.push(`- ${m.month}: ${usd(m.total)}`);
   }
+  // Groups first (Fixed / Essentials / Travel / Lifestyle), then the
+  // categories inside them, as on the dashboard.
+  const groupOf = new Map(
+    taxonomy.categories.map((c) => [
+      c.name,
+      taxonomy.groups.find((g) => g.id === c.group_id)?.name ?? "",
+    ])
+  );
   const recentMonths = [...new Set(categoryByMonth.map((c) => c.month))].slice(0, 6);
   if (recentMonths.length) {
-    out.push(`\n## Spending by category, last ${recentMonths.length} months (${CARD_CREDITS} are reimbursements, negative)`);
+    out.push(`\n## Spending by group, last ${recentMonths.length} months (${CARD_CREDITS} are reimbursements, negative)`);
+    for (const m of recentMonths) {
+      const row = groupByMonth
+        .filter((c) => c.month === m)
+        .map((c) => `${clean(c.category, 30)} ${usd(c.total)}`)
+        .join(", ");
+      out.push(`- ${m}: ${row}`);
+    }
+    out.push(`\n## Spending by category (group › category), last ${recentMonths.length} months`);
     for (const m of recentMonths) {
       const row = categoryByMonth
         .filter((c) => c.month === m)
-        .map((c) => `${clean(c.category, 30)} ${usd(c.total)}`)
+        .map((c) => {
+          const g = groupOf.get(c.category);
+          return `${g ? `${clean(g, 30)} › ` : ""}${clean(c.category, 30)} ${usd(c.total)}`;
+        })
         .join(", ");
       out.push(`- ${m}: ${row}`);
     }
   }
   if (budgets.length) {
     const spentThisMonth = new Map(
-      categoryByMonth.filter((c) => c.month === thisMonth).map((c) => [c.category, c.total])
+      [...categoryByMonth, ...groupByMonth]
+        .filter((c) => c.month === thisMonth)
+        .map((c) => [c.category, c.total])
     );
     out.push(`\n## Monthly budgets (spent so far in ${thisMonth} / limit)`);
     for (const b of budgets) {
-      out.push(`- ${clean(b.category, 30)}: ${usd(spentThisMonth.get(b.category) ?? 0)} / ${usd(b.monthly_limit)}`);
+      const name =
+        b.group_id != null
+          ? taxonomy.groups.find((g) => g.id === b.group_id)?.name
+          : taxonomy.categories.find((c) => c.id === b.category_id)?.name;
+      if (!name) continue;
+      out.push(`- ${clean(name, 30)}: ${usd(spentThisMonth.get(name) ?? 0)} / ${usd(b.monthly_limit)}`);
     }
   }
 

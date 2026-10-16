@@ -25,7 +25,6 @@ import {
   CARD_CREDITS,
   listBillPayments,
   listBills,
-  listBudgets,
   listCds,
   listCreditCards,
   listDashboardWarnings,
@@ -50,6 +49,7 @@ import CardCreditMeters from "./components/CardCreditMeters";
 import CdLadder from "./components/CdLadder";
 import ProjectionCard from "./components/ProjectionCard";
 import SpendingRangeSection from "./components/SpendingRangeSection";
+import SubscriptionsSection from "./components/SubscriptionsSection";
 import StatTile from "./components/StatTile";
 import WarningBanner from "./components/WarningBanner";
 import { DELTA_DOWN, DELTA_UP, fmtDate, fmtPct, fmtUSD, SERIES } from "./components/format";
@@ -145,7 +145,6 @@ export default async function DashboardPage() {
     cardSpendThisMonth,
     categorySpend,
     categorySpendByMonth,
-    budgets,
     settings,
     cardCredits,
     cardBenefits,
@@ -168,8 +167,7 @@ export default async function DashboardPage() {
     getMonthlySpending(12),
     getCardSpendForMonth(thisMonth),
     getCategorySpendForMonth(thisMonth),
-    getCategorySpendByMonth(),
-    listBudgets(),
+    getCategorySpendByMonth("group"),
     getSettings(),
     getCardCreditsForYear(thisMonth.slice(0, 4)),
     listCardBenefits(),
@@ -202,7 +200,10 @@ export default async function DashboardPage() {
     visibleComponents.reduce((sum, c) => sum + c.of(s), 0);
 
   // Card credits aren't a spending category, so they can't be the "top" one.
-  const topCategory = categorySpend.find((c) => c.category !== CARD_CREDITS && c.total > 0) ?? null;
+  const topCategory =
+    categorySpend.find(
+      (c) => c.category !== CARD_CREDITS && c.category !== "Uncategorized" && c.total > 0
+    ) ?? null;
 
   // Bills as logged for this month (feeds this month's total).
   const billName = new Map(bills.map((b) => [b.id, b.name]));
@@ -643,7 +644,6 @@ export default async function DashboardPage() {
           <SpendingRangeSection
             cards={cards.map((c) => ({ id: c.id, name: c.name, issuer: c.issuer }))}
             bills={bills.map((b) => ({ id: b.id, name: b.name }))}
-            budgets={budgets}
             today={today}
           />
           {(cardBenefits.length > 0 || cardCredits.count > 0) && (
@@ -663,6 +663,10 @@ export default async function DashboardPage() {
             (manual card totals, bills) count on the 1st of their month.
           </p>
         </Card>
+      )}
+
+      {cards.length > 0 && (
+        <SubscriptionsSection cards={cards.map((c) => ({ id: c.id, name: c.name }))} delay={342} />
       )}
 
       {(runwayMonths != null || priorMonths.length > 0) && (

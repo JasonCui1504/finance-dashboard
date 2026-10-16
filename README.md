@@ -232,28 +232,63 @@ under Manage → Spending, then get spending in either of two ways:
   cleaned transactions are POSTed. Column detection is flexible (Date /
   Description / Amount, or a separate Debit column); for single-Amount formats
   the charge sign is auto-detected with a toggle to flip it. Payments and
-  refunds (credits) are skipped. Each transaction is auto-categorized from the
-  merchant name (rules in `lib/finance/categories.ts`); a preview step lets you
-  correct any category before importing.
+  refunds (credits) are skipped. Each transaction is categorized automatically
+  (see "Categories" below); the preview lets you correct any of them before
+  importing, and a correction teaches that merchant for next time.
 - **Manual monthly total.** Under "Enter a monthly total by hand" you can log a
   whole-month amount per card (uncategorized). Used only for card+months with no
   imported transactions — imported transactions always take precedence, so the
   two never double-count.
 
-**Categories & budgets.** Transactions carry a category from the canonical set
-(Groceries, Dining, Transportation, Travel, Shopping, Utilities, Subscriptions,
-Entertainment, Health, Fees, Other). Set an optional monthly limit per category
-under Manage → Spending; the dashboard's Spending card then shows this month's
-spend by category with budget progress bars (green under, red over).
+**Categories.** Spending is sorted into four groups, each with a few categories
+(`spending_groups` / `spending_categories`):
 
-The Spending card also shows the current month's total, a per-card breakdown, a
-month-over-month delta (lower spend shown green), and a bar chart of total spend
-by month.
+| Group | Categories |
+|---|---|
+| Fixed | Housing · Utilities & phone · Subscriptions · Insurance |
+| Essentials | Groceries · Getting around · Health · Household |
+| Travel | Flights · Lodging · Car rental · Trip extras |
+| Lifestyle | Dining · Shopping · Fun |
+
+Every label is editable under Manage → Categories (rename, add, move between
+groups, delete while choosing where its transactions go). The built-in
+categories also carry a fixed slug that the keyword rules in
+`lib/finance/categories.ts` point at, so renaming never breaks them.
+
+How a transaction gets its category, first match wins:
+
+1. a category you picked by hand (never moved by a re-sort),
+2. a merchant rule you taught by recategorizing (`merchant_rules`),
+3. the card issuer's own label, when it's specific (e.g. "Airline"),
+4. the keyword rules,
+5. otherwise Uncategorized.
+
+Then **subscription detection** (`lib/finance/resort.ts`): the same merchant
+charging about the same amount (within 2%) about monthly, at least three times,
+moves to Fixed › Subscriptions unless it's already in a Fixed category or you've
+ruled on that merchant. It runs after every import, so a third monthly charge
+also re-labels the first two; a price change continuing the rhythm stays the
+same subscription. The dashboard's Subscriptions card lists them, flagging new
+ones and price changes.
+
+Manage → Categories → "Preview re-sort" applies the current labels and rules to
+everything already imported: it shows where each transaction would land (with
+top merchants per category) and changes nothing until you apply, after a
+backup to `~/finance-backups/`.
+
+**Budgets** (`spending_budgets`) can be set on a whole group or one category, as
+a monthly amount that scales to whatever date range the dashboard shows.
+
+The Spending card shows a date range (rolling 30 / 90 days, year to date or
+custom), a chart of purchases vs returns, a cards / bills breakdown, and
+spending by group → category → top merchants.
 
 Spending is deliberately kept out of the net-worth number — a monthly charge is
 a cash flow, not a balance-sheet liability. Tables: `credit_cards`,
 `card_payments` (manual monthly totals), `transactions` (imported, categorized),
-and `budgets` (per-category monthly limits).
+`spending_groups`, `spending_categories`, `merchant_rules` and `spending_budgets`.
+(The older `budgets` table and `transactions.category` text column are kept: the
+text column mirrors the current category name.)
 
 ## Bank-balance reminder
 
@@ -309,7 +344,8 @@ session-gated). Useful for backups, spreadsheets, and taxes.
 `snapshot_holdings` (per-holding value per day), `latest_prices` (last quote
 per ticker, the fallback when a fetch fails), and the spending tables
 `credit_cards`, `card_payments` (manual monthly totals), `transactions`
-(imported, categorized), `budgets` (per-category monthly limits).
+(imported, categorized), `spending_groups` / `spending_categories`,
+`merchant_rules` and `spending_budgets` (group or category monthly limits).
 
 CD current value is approximated as `principal × (1 + APY)^(years since
 open)`, frozen at maturity.

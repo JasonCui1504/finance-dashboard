@@ -1,4 +1,5 @@
 import type { Row } from "@libsql/client";
+import { UNCATEGORIZED, merchantKey, merchantName } from "./categories";
 import { getDb } from "./db";
 import { monthlyFactor } from "./tax";
 
@@ -87,14 +88,16 @@ export type Transaction = {
   date: string; // 'YYYY-MM-DD'
   description: string;
   amount: number;
+  /** Category name ("Uncategorized" when none). */
   category: string;
+  category_id: number | null;
+  /** 'user' once picked by hand: re-sorts leave it alone. */
+  category_source: string;
   is_card_credit: boolean;
   benefit_id: number | null;
   /** Collapsed out of the Manage list. Deliberately ignored by every total. */
   hidden: boolean;
 };
-
-export type Budget = { id: number; category: string; monthly_limit: number };
 
 export type CategorySpend = { category: string; total: number };
 
@@ -304,7 +307,9 @@ export async function listCardPayments(): Promise<CardPayment[]> {
 export async function listTransactions(limit = 500): Promise<Transaction[]> {
   const db = await getDb();
   const rs = await db.execute({
-    sql: "SELECT * FROM transactions ORDER BY date DESC, id DESC LIMIT ?",
+    sql: `SELECT t.*, c.name AS category_name FROM transactions t
+          LEFT JOIN spending_categories c ON c.id = t.category_id
+          ORDER BY t.date DESC, t.id DESC LIMIT ?`,
     args: [limit],
   });
   return rs.rows.map((r) => ({
@@ -313,7 +318,9 @@ export async function listTransactions(limit = 500): Promise<Transaction[]> {
     date: String(r.date),
     description: String(r.description),
     amount: num(r.amount),
-    category: String(r.category),
+    category: r.category_name == null ? "Uncategorized" : String(r.category_name),
+    category_id: r.category_id == null ? null : num(r.category_id),
+    category_source: String(r.category_source ?? "auto"),
     is_card_credit: num(r.is_card_credit) === 1,
     benefit_id: r.benefit_id == null ? null : num(r.benefit_id),
     hidden: num(r.hidden) === 1,
@@ -413,26 +420,22 @@ export async function getUntaggedCardCredits(
 export type MerchantRule = {
   id: number;
   match_key: string;
+  /** Category name ("Uncategorized" when the rule keeps a merchant unsorted). */
   category: string;
+  category_id: number | null;
 };
 
 export async function listMerchantRules(): Promise<MerchantRule[]> {
   const db = await getDb();
-  const rs = await db.execute("SELECT * FROM merchant_rules ORDER BY match_key");
+  const rs = await db.execute(
+    `SELECT r.id, r.match_key, r.category_id, c.name AS category_name FROM merchant_rules r
+     LEFT JOIN spending_categories c ON c.id = r.category_id ORDER BY r.match_key`
+  );
   return rs.rows.map((r) => ({
     id: num(r.id),
     match_key: String(r.match_key),
-    category: String(r.category),
-  }));
-}
-
-export async function listBudgets(): Promise<Budget[]> {
-  const db = await getDb();
-  const rs = await db.execute("SELECT * FROM budgets ORDER BY category");
-  return rs.rows.map((r) => ({
-    id: num(r.id),
-    category: String(r.category),
-    monthly_limit: num(r.monthly_limit),
+    category: r.category_name == null ? "Uncategorized" : String(r.category_name),
+    category_id: r.category_id == null ? null : num(r.category_id),
   }));
 }
 
@@ -446,6 +449,8 @@ export type Bill = {
   /** The usual monthly amount: pre-fills each month's entry. */
   amount: number;
   start_month: string;
+  /** Spending category (a Fixed one by default). */
+  category_id: number | null;
 };
 
 /** What one bill actually came to in one month. */
@@ -480,6 +485,7 @@ export async function listBills(): Promise<Bill[]> {
     name: String(r.name),
     amount: num(r.amount),
     start_month: String(r.start_month),
+    category_id: r.category_id == null ? null : num(r.category_id),
   }));
 }
 
@@ -563,46 +569,77 @@ export type CategorySpendPoint = CategorySpend & { month: string };
  * called them they'd quietly shrink an unrelated category like Bills.
  */
 export const CARD_CREDITS = "Card credits";
-const CATEGORY_SQL = `CASE WHEN is_card_credit = 1 THEN '${CARD_CREDITS}' ELSE category END`;
+
+/** Spending labels: by category, or rolled up to its group. */
+export type SpendLevel = "category" | "group";
+
+const LABEL_JOIN = `LEFT JOIN spending_categories sc ON sc.id = t.category_id
+                    LEFT JOIN spending_groups sg ON sg.id = sc.group_id`;
+const labelSql = (level: SpendLevel) =>
+  `CASE WHEN t.is_card_credit = 1 THEN '${CARD_CREDITS}'
+        ELSE COALESCE(${level === "group" ? "sg.name" : "sc.name"}, '${UNCATEGORIZED}') END`;
+
+/** Logged bills per month, labelled by their category or its group. */
+async function billMonthLabels(level: SpendLevel): Promise<{ month: string; label: string; total: number }[]> {
+  const db = await getDb();
+  const rs = await db.execute(
+    `SELECT p.month, COALESCE(${level === "group" ? "sg.name" : "sc.name"}, '${UNCATEGORIZED}') AS label,
+            SUM(p.amount) AS total
+     FROM bill_payments p
+     JOIN bills b ON b.id = p.bill_id
+     LEFT JOIN spending_categories sc ON sc.id = b.category_id
+     LEFT JOIN spending_groups sg ON sg.id = sc.group_id
+     GROUP BY p.month, 2`
+  );
+  return rs.rows.map((r) => ({ month: String(r.month), label: String(r.label), total: num(r.total) }));
+}
 
 /** One day's card activity for one card and category: purchases and returns apart. */
 export type SpendDay = {
   date: string;
   card_id: number;
-  category: string;
+  /** null = Uncategorized. */
+  category_id: number | null;
+  /** A card benefit credit or points redemption (reimburses, isn't a category). */
+  credit: boolean;
   /** Charges (positive). */
   spent: number;
   /** Refunds and statement credits (negative). */
   returned: number;
 };
 
+/** Net spending at one merchant on one day, for the top-merchants lists. */
+export type MerchantDay = {
+  date: string;
+  name: string;
+  category_id: number | null;
+  amount: number;
+};
+
 /**
- * Spending known only as a monthly total, spread over its month by the
- * range view: a card's manual amount for a month with no imported
- * transactions (they win, as in cardMonthTotals), and logged bills.
+ * Spending known only as a monthly total, counted on the 1st by the range
+ * view: a card's manual amount for a month with no imported transactions
+ * (they win, as in cardMonthTotals), and logged bills.
  */
 export type MonthlySpendAmount = {
   month: string;
   card_id: number | null;
   bill_id: number | null;
-  category: string;
+  /** The bill's category; null for a card's manual total. */
+  category_id: number | null;
   amount: number;
 };
 
 /** Everything the date-range spending view needs, in one round trip. */
 export async function getSpendingActivity(): Promise<{
   days: SpendDay[];
+  merchants: MerchantDay[];
   monthly: MonthlySpendAmount[];
 }> {
   const db = await getDb();
-  const [days, manual, bills] = await Promise.all([
+  const [tx, manual, bills] = await Promise.all([
     db.execute(
-      `SELECT date, card_id, ${CATEGORY_SQL} AS category,
-              SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS spent,
-              SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS returned
-       FROM transactions
-       GROUP BY date, card_id, 3
-       ORDER BY date`
+      "SELECT date, card_id, description, amount, category_id, is_card_credit FROM transactions ORDER BY date"
     ),
     db.execute(
       `SELECT p.card_id, p.month, p.amount FROM card_payments p
@@ -611,40 +648,63 @@ export async function getSpendingActivity(): Promise<{
          WHERE t.card_id = p.card_id AND substr(t.date, 1, 7) = p.month
        )`
     ),
-    db.execute("SELECT bill_id, month, amount FROM bill_payments"),
+    db.execute(
+      `SELECT p.bill_id, p.month, p.amount, b.category_id
+       FROM bill_payments p JOIN bills b ON b.id = p.bill_id`
+    ),
   ]);
+  const days = new Map<string, SpendDay>();
+  const merchants = new Map<string, MerchantDay>();
+  for (const r of tx.rows) {
+    const date = String(r.date);
+    const cardId = num(r.card_id);
+    const categoryId = r.category_id == null ? null : num(r.category_id);
+    const credit = num(r.is_card_credit) === 1;
+    const amount = num(r.amount);
+    const dk = `${date}|${cardId}|${categoryId}|${credit}`;
+    const d = days.get(dk) ?? { date, card_id: cardId, category_id: categoryId, credit, spent: 0, returned: 0 };
+    if (amount > 0) d.spent += amount;
+    else d.returned += amount;
+    days.set(dk, d);
+    if (credit) continue;
+    const name = merchantName(merchantKey(String(r.description)) || String(r.description).toLowerCase());
+    const mk = `${date}|${name}|${categoryId}`;
+    const m = merchants.get(mk) ?? { date, name, category_id: categoryId, amount: 0 };
+    m.amount += amount;
+    merchants.set(mk, m);
+  }
   return {
-    days: days.rows.map((r) => ({
-      date: String(r.date),
-      card_id: num(r.card_id),
-      category: String(r.category),
-      spent: num(r.spent),
-      returned: num(r.returned),
-    })),
+    days: [...days.values()],
+    merchants: [...merchants.values()],
     monthly: [
       ...manual.rows.map((r) => ({
         month: String(r.month),
         card_id: num(r.card_id),
         bill_id: null,
-        category: "Card total (no statement)",
+        category_id: null,
         amount: num(r.amount),
       })),
       ...bills.rows.map((r) => ({
         month: String(r.month),
         card_id: null,
         bill_id: num(r.bill_id),
-        category: "Bills",
+        category_id: r.category_id == null ? null : num(r.category_id),
         amount: num(r.amount),
       })),
     ],
   };
 }
 
-export async function getCategorySpendByMonth(): Promise<CategorySpendPoint[]> {
+/**
+ * Spend per month by category (or group), card credits apart and logged bills
+ * under their own category, so the Cash flow diagram, insights and the
+ * assistant read the same labels as the dashboard.
+ */
+export async function getCategorySpendByMonth(level: SpendLevel = "category"): Promise<CategorySpendPoint[]> {
   const db = await getDb();
   const rs = await db.execute(
-    `SELECT substr(date, 1, 7) AS month, ${CATEGORY_SQL} AS category, SUM(amount) AS total
-     FROM transactions
+    `SELECT substr(t.date, 1, 7) AS month, ${labelSql(level)} AS category, SUM(t.amount) AS total
+     FROM transactions t ${LABEL_JOIN}
      GROUP BY month, 2
      ORDER BY month DESC, total DESC`
   );
@@ -653,39 +713,22 @@ export async function getCategorySpendByMonth(): Promise<CategorySpendPoint[]> {
     category: String(r.category),
     total: num(r.total),
   }));
-  // Bills count under the "Bills" category, merged with any imported
-  // transactions already categorized as Bills.
-  for (const [month, total] of await billMonthTotals()) {
-    const existing = points.find((p) => p.month === month && p.category === "Bills");
-    if (existing) existing.total += total;
-    else points.push({ month, category: "Bills", total });
+  for (const b of await billMonthLabels(level)) {
+    const existing = points.find((p) => p.month === b.month && p.category === b.label);
+    if (existing) existing.total += b.total;
+    else points.push({ month: b.month, category: b.label, total: b.total });
   }
   return points.sort((a, b) => b.month.localeCompare(a.month) || b.total - a.total);
 }
 
 export async function getCategorySpendForMonth(
-  month: string
+  month: string,
+  level: SpendLevel = "category"
 ): Promise<CategorySpend[]> {
-  const db = await getDb();
-  const rs = await db.execute({
-    sql: `SELECT ${CATEGORY_SQL} AS category, SUM(amount) AS total
-          FROM transactions
-          WHERE substr(date, 1, 7) = ?
-          GROUP BY 1
-          ORDER BY total DESC`,
-    args: [month],
-  });
-  const spend = rs.rows.map((r) => ({
-    category: String(r.category),
-    total: num(r.total),
-  }));
-  const bills = (await billMonthTotals()).get(month) ?? 0;
-  if (bills > 0) {
-    const existing = spend.find((c) => c.category === "Bills");
-    if (existing) existing.total += bills;
-    else spend.push({ category: "Bills", total: bills });
-  }
-  return spend.sort((a, b) => b.total - a.total);
+  return (await getCategorySpendByMonth(level))
+    .filter((p) => p.month === month)
+    .map(({ category, total }) => ({ category, total }))
+    .sort((a, b) => b.total - a.total);
 }
 
 /** Monthly-equivalent amount for recurring income; null for one-off/irregular. */
