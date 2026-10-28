@@ -228,11 +228,13 @@ export async function getLatestSnapshot(): Promise<Snapshot | null> {
   return rs.rows.length ? rowToSnapshot(rs.rows[0]) : null;
 }
 
-export async function getSnapshotHistory(limit = 365): Promise<Snapshot[]> {
+/** Snapshots oldest first: the newest `limit`, or every one when `limit` is null. */
+export async function getSnapshotHistory(limit: number | null = 365): Promise<Snapshot[]> {
   const db = await getDb();
   const rs = await db.execute({
     sql: "SELECT * FROM (SELECT * FROM daily_snapshots ORDER BY date DESC LIMIT ?) ORDER BY date ASC",
-    args: [limit],
+    // SQLite treats a negative LIMIT as no limit.
+    args: [limit ?? -1],
   });
   return rs.rows.map(rowToSnapshot);
 }
@@ -293,11 +295,12 @@ export async function listCardPayments(): Promise<CardPayment[]> {
   }));
 }
 
-export async function listTransactions(limit = 500): Promise<Transaction[]> {
+/** Newest first: the newest `limit`, or every transaction when `limit` is null. */
+export async function listTransactions(limit: number | null = 500): Promise<Transaction[]> {
   const db = await getDb();
   const rs = await db.execute({
     sql: "SELECT * FROM transactions ORDER BY date DESC, id DESC LIMIT ?",
-    args: [limit],
+    args: [limit ?? -1],
   });
   return rs.rows.map((r) => ({
     id: num(r.id),
@@ -443,6 +446,26 @@ export type Bill = {
 /** What one bill actually came to in one month. */
 export type BillPayment = { id: number; bill_id: number; month: string; amount: number };
 
+export type HoldingValuePoint = { month: string; holding_id: number; ticker: string; value: number };
+
+/** Each holding's value in the last snapshot of every month, oldest month first. */
+export async function getHoldingValueHistory(): Promise<HoldingValuePoint[]> {
+  const db = await getDb();
+  const rs = await db.execute(
+    `SELECT substr(s.date, 1, 7) AS month, sh.holding_id, sh.ticker, sh.value
+     FROM snapshot_holdings sh
+     JOIN daily_snapshots s ON s.id = sh.snapshot_id
+     WHERE s.date IN (SELECT MAX(date) FROM daily_snapshots GROUP BY substr(date, 1, 7))
+     ORDER BY month, sh.value DESC`
+  );
+  return rs.rows.map((r) => ({
+    month: String(r.month),
+    holding_id: num(r.holding_id),
+    ticker: String(r.ticker),
+    value: num(r.value),
+  }));
+}
+
 /** Industry per ticker ("" for funds/ETFs); tickers not looked up yet are absent. */
 export async function getTickerIndustries(): Promise<Map<string, string>> {
   const db = await getDb();
@@ -515,8 +538,8 @@ async function cardMonthTotals(): Promise<Map<string, number>> {
   return totals;
 }
 
-/** Total spending per month, oldest first (last `limit` months present). */
-export async function getMonthlySpending(limit = 12): Promise<MonthlySpending[]> {
+/** Total spending per month, oldest first (last `limit` months present, or all when null). */
+export async function getMonthlySpending(limit: number | null = 12): Promise<MonthlySpending[]> {
   const [totals, bills] = await Promise.all([cardMonthTotals(), billMonthTotals()]);
   const byMonth = new Map<string, number>(bills);
   for (const [key, value] of totals) {
@@ -526,7 +549,7 @@ export async function getMonthlySpending(limit = 12): Promise<MonthlySpending[]>
   return [...byMonth.entries()]
     .map(([month, total]) => ({ month, total }))
     .sort((a, b) => a.month.localeCompare(b.month))
-    .slice(-limit);
+    .slice(limit == null ? 0 : -limit);
 }
 
 /** Per-card spend for a specific month ('YYYY-MM'), from the merged totals. */

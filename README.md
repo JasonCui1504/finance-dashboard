@@ -58,9 +58,11 @@ A chat panel on `/dashboard` answers questions with a local Llama model
   models or web search) and its own model directory `~/.finance-ollama/models`.
   It's separate from Ollama.app, which the dashboard never talks to. Log:
   `~/Library/Logs/finance-llm.log`.
-- **No tools.** `lib/finance/assistant.ts` builds a read-only text summary
-  with SQL (net worth, accounts, holdings, CDs, income, spending, budgets,
-  bills, the newest 300 transactions) and sends it with your question.
+- **No tools.** `lib/finance/assistant.ts` builds a read-only text dump of
+  the whole database with SQL (net-worth history, accounts, holdings and their
+  month-end values, CDs, every paycheck and income entry, spending per
+  month/category/card, budgets, card benefits, bills and bill payments,
+  merchant rules, and every transaction) and sends it with your question.
   The model can't query, write or fetch anything, so text planted in an
   imported statement can at worst change the wording of a reply. Categories
   hidden on the dashboard are left out of the summary too.
@@ -94,6 +96,15 @@ for `~/.finance-ollama/bin/ollama` (the path stays the same across updates). To 
 
 The model is an 8B model: good at describing patterns, unreliable at maths, so
 the summary carries precomputed totals and the prompt tells it to quote them.
+
+The context window grows with your data (in 16k-token steps, up to llama3.1's
+128k), so a long history costs memory and time: the KV cache is ~1 GB per 16k
+tokens (8-bit cache, set by `install.sh`) on top of the ~5 GB model, and the
+first question after the model loads reads the whole dump (follow-ups reuse
+it). If the data passes ~106k tokens, the oldest transactions are left out
+of the line items (they still count in every total). An 8B model also gets
+less precise the longer the context, so ask for figures the summary already
+totals rather than asking it to scan thousands of transactions.
 
 `scripts/local/pull-from-turso.mjs` was the one-off copy from the old Turso
 database. The sections below describe the previous hosted setup.

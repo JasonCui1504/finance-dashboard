@@ -53,7 +53,9 @@ PLIST
 # The assistant's model server: the official standalone Ollama build in its
 # own directory (doesn't self-update; one stable path for the firewall rule),
 # loopback only, Ollama cloud models and web search disabled, and its own
-# model directory so it's separate from any Ollama.app install.
+# model directory so it's separate from any Ollama.app install. Flash
+# attention and an 8-bit KV cache halve the memory the long context needs
+# (the assistant sends the whole database, up to llama3.1's 128k tokens).
 OLLAMA="$HOME/.finance-ollama/bin/ollama"
 AGENT_NAMES=(server refresh)
 if [[ -x $OLLAMA ]]; then
@@ -68,6 +70,8 @@ if [[ -x $OLLAMA ]]; then
     <key>OLLAMA_HOST</key><string>127.0.0.1:11435</string>
     <key>OLLAMA_NO_CLOUD</key><string>1</string>
     <key>OLLAMA_MODELS</key><string>$LLM_MODELS</string>
+    <key>OLLAMA_FLASH_ATTENTION</key><string>1</string>
+    <key>OLLAMA_KV_CACHE_TYPE</key><string>q8_0</string>
   </dict>
   <key>ProgramArguments</key><array><string>$OLLAMA</string><string>serve</string></array>
   <key>RunAtLoad</key><true/>
